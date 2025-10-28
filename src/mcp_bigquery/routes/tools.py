@@ -1,6 +1,6 @@
 """FastAPI routes for tool operations."""
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, Depends
 from fastapi.responses import JSONResponse
 from ..handlers.tools import (
     query_tool_handler,
@@ -13,78 +13,99 @@ from ..handlers.tools import (
     get_schema_changes_handler,
     cache_management_handler,
 )
+from ..core.auth import UserContext
+from ..api.dependencies import create_auth_dependency
 
 
 def create_tools_router(bigquery_client, event_manager, knowledge_base) -> APIRouter:
     """Create router for tool-related endpoints."""
     router = APIRouter(prefix="/tools", tags=["tools"])
+    
+    # Create auth dependency with knowledge base for role loading
+    get_current_user = create_auth_dependency(knowledge_base)
 
     @router.post("/query")
-    async def query_tool_fastapi(payload: Dict[str, Any] = Body(...)):
+    async def query_tool_fastapi(
+        payload: Dict[str, Any] = Body(...),
+        current_user: UserContext = Depends(get_current_user)
+    ):
         """Execute a read-only SQL query on BigQuery."""
         sql = payload.get("sql", "")
         maximum_bytes_billed = payload.get("maximum_bytes_billed", 1000000000)
         use_cache = payload.get("use_cache", True)
-        user_id = payload.get("user_id")
         result = await query_tool_handler(
-            bigquery_client, event_manager, sql, maximum_bytes_billed,
-            knowledge_base, use_cache, user_id
+            bigquery_client, event_manager, sql, current_user,
+            maximum_bytes_billed, knowledge_base, use_cache
         )
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
 
     @router.post("/execute_bigquery_sql")
-    async def execute_bigquery_sql_fastapi(payload: Dict[str, Any] = Body(...)):
+    async def execute_bigquery_sql_fastapi(
+        payload: Dict[str, Any] = Body(...),
+        current_user: UserContext = Depends(get_current_user)
+    ):
         sql = payload.get("sql", "")
         maximum_bytes_billed = payload.get("maximum_bytes_billed", 1000000000)
         use_cache = payload.get("use_cache", True)
-        user_id = payload.get("user_id")
         result = await query_tool_handler(
-            bigquery_client, event_manager, sql, maximum_bytes_billed,
-            knowledge_base, use_cache, user_id
+            bigquery_client, event_manager, sql, current_user,
+            maximum_bytes_billed, knowledge_base, use_cache
         )
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
 
     @router.get("/datasets")
-    async def get_datasets_fastapi():
-        """Retrieve all datasets."""
-        result = await get_datasets_handler(bigquery_client)
+    async def get_datasets_fastapi(current_user: UserContext = Depends(get_current_user)):
+        """Retrieve all datasets the user has access to."""
+        result = await get_datasets_handler(bigquery_client, current_user)
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
 
     @router.get("/tables")
-    async def get_tables_fastapi(dataset_id: str = Query(..., description="Dataset ID")):
-        result = await get_tables_handler(bigquery_client, dataset_id)
+    async def get_tables_fastapi(
+        dataset_id: str = Query(..., description="Dataset ID"),
+        current_user: UserContext = Depends(get_current_user)
+    ):
+        result = await get_tables_handler(bigquery_client, dataset_id, current_user)
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
 
     @router.post("/get_tables")
-    async def get_tables_post_fastapi(payload: Dict[str, Any] = Body(...)):
+    async def get_tables_post_fastapi(
+        payload: Dict[str, Any] = Body(...),
+        current_user: UserContext = Depends(get_current_user)
+    ):
         """Get tables in a dataset (POST version for MCPTools compatibility)."""
         dataset_id = payload.get("dataset_id")
         if not dataset_id:
             return JSONResponse(content={"error": "dataset_id is required"}, status_code=400)
-        result = await get_tables_handler(bigquery_client, dataset_id)
+        result = await get_tables_handler(bigquery_client, dataset_id, current_user)
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
 
     @router.get("/table_schema")
     async def get_table_schema_fastapi(
-        dataset_id: str = Query(...), table_id: str = Query(...), include_samples: bool = Query(True)
+        dataset_id: str = Query(...),
+        table_id: str = Query(...),
+        include_samples: bool = Query(True),
+        current_user: UserContext = Depends(get_current_user)
     ):
-        result = await get_table_schema_handler(bigquery_client, dataset_id, table_id)
+        result = await get_table_schema_handler(bigquery_client, dataset_id, table_id, current_user)
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
 
     @router.post("/get_table_schema")
-    async def get_table_schema_post_fastapi(payload: Dict[str, Any] = Body(...)):
+    async def get_table_schema_post_fastapi(
+        payload: Dict[str, Any] = Body(...),
+        current_user: UserContext = Depends(get_current_user)
+    ):
         """Get table schema (POST version for MCPTools compatibility)."""
         dataset_id = payload.get("dataset_id")
         table_id = payload.get("table_id")
@@ -93,7 +114,7 @@ def create_tools_router(bigquery_client, event_manager, knowledge_base) -> APIRo
                 content={"error": "dataset_id and table_id are required"},
                 status_code=400
             )
-        result = await get_table_schema_handler(bigquery_client, dataset_id, table_id)
+        result = await get_table_schema_handler(bigquery_client, dataset_id, table_id, current_user)
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])
         return result
@@ -115,13 +136,16 @@ def create_tools_router(bigquery_client, event_manager, knowledge_base) -> APIRo
         return result
 
     @router.post("/explain_table")
-    async def explain_table_fastapi(payload: Dict[str, Any] = Body(...)):
+    async def explain_table_fastapi(
+        payload: Dict[str, Any] = Body(...),
+        current_user: UserContext = Depends(get_current_user)
+    ):
         project_id = payload.get("project_id")
         dataset_id = payload.get("dataset_id")
         table_id = payload.get("table_id")
         include_usage_stats = payload.get("include_usage_stats", True)
         result = await explain_table_handler(
-            bigquery_client, knowledge_base, project_id, dataset_id, table_id
+            bigquery_client, knowledge_base, project_id, dataset_id, table_id, current_user
         )
         if isinstance(result, tuple) and len(result) == 2:
             return JSONResponse(content=result[0], status_code=result[1])

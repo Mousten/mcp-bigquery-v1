@@ -8,6 +8,7 @@ from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError
 from ..core.json_encoder import CustomJSONEncoder
 from ..core.supabase_client import SupabaseKnowledgeBase
+from ..core.auth import UserContext, AuthorizationError, extract_dataset_table_from_path, normalize_identifier
 
 
 def extract_table_references(sql: str) -> List[str]:
@@ -22,19 +23,85 @@ def extract_table_references(sql: str) -> List[str]:
     return tables
 
 
+def check_table_access(user_context: UserContext, table_references: List[str]) -> None:
+    """Check if user has access to all tables referenced in query.
+    
+    Args:
+        user_context: User context with permissions
+        table_references: List of table references from SQL
+        
+    Raises:
+        AuthorizationError: If user lacks access to any referenced table
+    """
+    for table_ref in table_references:
+        dataset_id, table_id = extract_dataset_table_from_path(table_ref)
+        
+        # Check access based on what we extracted
+        if dataset_id and table_id:
+            # Full dataset.table reference
+            if not user_context.can_access_table(dataset_id, table_id):
+                raise AuthorizationError(
+                    f"Access denied to table {dataset_id}.{table_id}"
+                )
+        elif dataset_id and not table_id:
+            # Dataset-only reference
+            if not user_context.can_access_dataset(dataset_id):
+                raise AuthorizationError(
+                    f"Access denied to dataset {dataset_id}"
+                )
+        # If we can't parse the reference properly, we'll let BigQuery handle it
+
+
 async def query_tool_handler(
     bigquery_client,
     event_manager,
     sql: str,
+    user_context: UserContext,
     maximum_bytes_billed: int = 314572800,
     knowledge_base: Optional[SupabaseKnowledgeBase] = None,
     use_cache: bool = True,
-    user_id: Optional[str] = None,
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
-    """Enhanced query handler with caching and knowledge base integration."""
+    """Enhanced query handler with caching and knowledge base integration.
+    
+    Args:
+        bigquery_client: BigQuery client instance
+        event_manager: Event manager for broadcasting events
+        sql: SQL query to execute
+        user_context: User context with authentication and authorization info
+        maximum_bytes_billed: Maximum bytes to bill for the query
+        knowledge_base: Optional knowledge base for caching
+        use_cache: Whether to use caching
+        
+    Returns:
+        Query result dict or tuple with error
+        
+    Raises:
+        AuthorizationError: If user lacks required permissions
+    """
     try:
         query_id = str(uuid.uuid4())
+        user_id = user_context.user_id
         tables_accessed = extract_table_references(sql)
+        
+        # Check query execution permission
+        if not user_context.has_permission("query:execute"):
+            return {"error": "Missing required permission: query:execute"}, 403
+        
+        # Check table access authorization
+        try:
+            check_table_access(user_context, tables_accessed)
+        except AuthorizationError as e:
+            await event_manager.broadcast(
+                "queries",
+                "query_authorization_failed",
+                {
+                    "query_id": query_id,
+                    "user_id": user_id,
+                    "error": str(e),
+                    "sql": sql[:100] + "..." if len(sql) > 100 else sql,
+                },
+            )
+            return {"error": str(e)}, 403
 
         # Check cache first if enabled and knowledge_base is provided
         cached_result = None
@@ -194,11 +261,35 @@ async def query_tool_handler(
         return {"error": f"Unexpected error: {str(e)}"}, 500
 
 
-async def get_datasets_handler(bigquery_client) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
-    """Retrieve the list of all datasets in the current project."""
+async def get_datasets_handler(
+    bigquery_client,
+    user_context: UserContext
+) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
+    """Retrieve the list of datasets the user has access to.
+    
+    Args:
+        bigquery_client: BigQuery client instance
+        user_context: User context with authorization info
+        
+    Returns:
+        Dict containing filtered list of accessible datasets
+    """
     try:
+        # Check permission
+        if not user_context.has_permission("dataset:list"):
+            # Allow if user has query:execute permission
+            if not user_context.has_permission("query:execute"):
+                return {"error": "Missing required permission: dataset:list"}, 403
+        
         datasets = list(bigquery_client.list_datasets())
-        dataset_list = [{"dataset_id": dataset.dataset_id} for dataset in datasets]
+        
+        # Filter datasets based on user's allowed datasets
+        dataset_list = []
+        for dataset in datasets:
+            dataset_id = normalize_identifier(dataset.dataset_id)
+            if user_context.can_access_dataset(dataset_id):
+                dataset_list.append({"dataset_id": dataset.dataset_id})
+        
         return {"datasets": dataset_list}
     except GoogleAPIError as e:
         return {"error": f"BigQuery API error: {str(e)}"}, 500
@@ -206,11 +297,36 @@ async def get_datasets_handler(bigquery_client) -> Union[Dict[str, Any], Tuple[D
         return {"error": f"Unexpected error: {str(e)}"}, 500
 
 
-async def get_tables_handler(bigquery_client, dataset_id: str) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
-    """Retrieve all tables within a specific dataset."""
+async def get_tables_handler(
+    bigquery_client,
+    dataset_id: str,
+    user_context: UserContext
+) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
+    """Retrieve tables within a dataset that the user has access to.
+    
+    Args:
+        bigquery_client: BigQuery client instance
+        dataset_id: Dataset identifier
+        user_context: User context with authorization info
+        
+    Returns:
+        Dict containing filtered list of accessible tables
+    """
     try:
+        # Check dataset access
+        normalized_dataset = normalize_identifier(dataset_id)
+        if not user_context.can_access_dataset(normalized_dataset):
+            return {"error": f"Access denied to dataset {dataset_id}"}, 403
+        
         tables = list(bigquery_client.list_tables(dataset_id))
-        table_list = [{"table_id": table.table_id} for table in tables]
+        
+        # Filter tables based on user's allowed tables
+        table_list = []
+        for table in tables:
+            table_id = normalize_identifier(table.table_id)
+            if user_context.can_access_table(normalized_dataset, table_id):
+                table_list.append({"table_id": table.table_id})
+        
         return {"tables": table_list}
     except GoogleAPIError as e:
         return {"error": f"BigQuery API error: {str(e)}"}, 500
@@ -219,10 +335,29 @@ async def get_tables_handler(bigquery_client, dataset_id: str) -> Union[Dict[str
 
 
 async def get_table_schema_handler(
-    bigquery_client, dataset_id: str, table_id: str
+    bigquery_client,
+    dataset_id: str,
+    table_id: str,
+    user_context: UserContext
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
-    """Retrieve schema details for a specific table."""
+    """Retrieve schema details for a specific table.
+    
+    Args:
+        bigquery_client: BigQuery client instance
+        dataset_id: Dataset identifier
+        table_id: Table identifier
+        user_context: User context with authorization info
+        
+    Returns:
+        Dict containing table schema
+    """
     try:
+        # Check table access
+        normalized_dataset = normalize_identifier(dataset_id)
+        normalized_table = normalize_identifier(table_id)
+        if not user_context.can_access_table(normalized_dataset, normalized_table):
+            return {"error": f"Access denied to table {dataset_id}.{table_id}"}, 403
+        
         table_ref = bigquery_client.dataset(dataset_id).table(table_id)
         table = bigquery_client.get_table(table_ref)
         schema = [
@@ -318,10 +453,29 @@ async def explain_table_handler(
     knowledge_base: SupabaseKnowledgeBase,
     project_id: str,
     dataset_id: str,
-    table_id: str
+    table_id: str,
+    user_context: UserContext
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
-    """Rich table documentation with business context."""
+    """Rich table documentation with business context.
+    
+    Args:
+        bigquery_client: BigQuery client instance
+        knowledge_base: Knowledge base for documentation
+        project_id: Project identifier
+        dataset_id: Dataset identifier
+        table_id: Table identifier
+        user_context: User context with authorization info
+        
+    Returns:
+        Dict containing table explanation
+    """
     try:
+        # Check table access
+        normalized_dataset = normalize_identifier(dataset_id)
+        normalized_table = normalize_identifier(table_id)
+        if not user_context.can_access_table(normalized_dataset, normalized_table):
+            return {"error": f"Access denied to table {dataset_id}.{table_id}"}, 403
+        
         # Get table metadata from BigQuery
         table_ref = bigquery_client.dataset(dataset_id).table(table_id)
         table = bigquery_client.get_table(table_ref)
