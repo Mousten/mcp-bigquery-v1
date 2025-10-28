@@ -610,3 +610,843 @@ class SupabaseKnowledgeBase:
         except Exception as e:
             print(f"Error fetching role dataset access: {e}")
             return []
+    
+    # Chat Session Management Methods
+    
+    async def create_chat_session(
+        self,
+        user_id: str,
+        title: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Create a new chat session for a user.
+        
+        Expected table schema for chat_sessions:
+        - id: uuid (primary key)
+        - user_id: text (foreign key to user_profiles)
+        - title: text (nullable)
+        - created_at: timestamptz (auto)
+        - updated_at: timestamptz (auto)
+        - metadata: jsonb (nullable)
+        
+        Args:
+            user_id: User ID from Supabase auth
+            title: Optional session title
+            metadata: Optional metadata dict
+            
+        Returns:
+            Created session dict with id, user_id, title, created_at, updated_at, metadata
+            or None if connection fails
+            
+        Raises:
+            Exception: If table doesn't exist or insert fails
+        """
+        if not await self.verify_connection():
+            return None
+        
+        try:
+            session_data = {
+                "user_id": user_id,
+                "title": title or "New Chat",
+                "metadata": metadata or {}
+            }
+            
+            result = self.supabase.table("chat_sessions").insert(session_data).execute()
+            
+            if result.data:
+                print(f"Created chat session {result.data[0]['id']} for user {user_id}")
+                return result.data[0]
+            return None
+            
+        except APIError as e:
+            print(f"Error creating chat session: {e}")
+            if hasattr(e, 'details') and e.details:
+                print(f"API Error details: {e.details}")
+            if hasattr(e, 'hint') and e.hint:
+                print(f"API Error hint: {e.hint}")
+            raise
+        except Exception as e:
+            print(f"Error creating chat session: {e}")
+            raise
+    
+    async def get_chat_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve a chat session by ID.
+        
+        Args:
+            session_id: Chat session ID
+            user_id: Optional user ID for access control (required if not using service key)
+            
+        Returns:
+            Session dict or None if not found
+        """
+        if not await self.verify_connection():
+            return None
+        
+        try:
+            query = self.supabase.table("chat_sessions").select("*").eq("id", session_id)
+            
+            # Add user filter if using user-based RLS
+            if user_id and not self._use_service_key:
+                query = query.eq("user_id", user_id)
+            
+            result = query.limit(1).execute()
+            
+            if result.data:
+                return result.data[0]
+            return None
+            
+        except Exception as e:
+            print(f"Error retrieving chat session: {e}")
+            return None
+    
+    async def get_user_chat_sessions(
+        self,
+        user_id: str,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Retrieve chat sessions for a user, ordered by most recent.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            limit: Maximum number of sessions to return
+            offset: Number of sessions to skip (for pagination)
+            
+        Returns:
+            List of session dicts ordered by updated_at desc
+        """
+        if not await self.verify_connection():
+            return []
+        
+        try:
+            result = self.supabase.table("chat_sessions") \
+                .select("*") \
+                .eq("user_id", user_id) \
+                .order("updated_at", desc=True) \
+                .limit(limit) \
+                .offset(offset) \
+                .execute()
+            
+            return result.data or []
+            
+        except Exception as e:
+            print(f"Error retrieving user chat sessions: {e}")
+            return []
+    
+    async def update_chat_session(
+        self,
+        session_id: str,
+        title: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None
+    ) -> bool:
+        """Update a chat session's title or metadata.
+        
+        Args:
+            session_id: Chat session ID
+            title: Optional new title
+            metadata: Optional new metadata
+            user_id: Optional user ID for access control
+            
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        if not await self.verify_connection():
+            return False
+        
+        try:
+            update_data = {}
+            if title is not None:
+                update_data["title"] = title
+            if metadata is not None:
+                update_data["metadata"] = metadata
+            
+            if not update_data:
+                return True
+            
+            query = self.supabase.table("chat_sessions").update(update_data).eq("id", session_id)
+            
+            # Add user filter if using user-based RLS
+            if user_id and not self._use_service_key:
+                query = query.eq("user_id", user_id)
+            
+            query.execute()
+            return True
+            
+        except Exception as e:
+            print(f"Error updating chat session: {e}")
+            return False
+    
+    async def append_chat_message(
+        self,
+        session_id: str,
+        user_id: str,
+        role: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Append a message to a chat session.
+        
+        Expected table schema for chat_messages:
+        - id: uuid (primary key)
+        - chat_session_id: uuid (foreign key to chat_sessions)
+        - user_id: text (foreign key to user_profiles)
+        - role: text (e.g., 'user', 'assistant', 'system')
+        - content: text
+        - created_at: timestamptz (auto)
+        - metadata: jsonb (nullable)
+        
+        Args:
+            session_id: Chat session ID
+            user_id: User ID from Supabase auth
+            role: Message role ('user', 'assistant', 'system', etc.)
+            content: Message content
+            metadata: Optional metadata (tokens, model, etc.)
+            
+        Returns:
+            Created message dict or None if insert fails
+            
+        Raises:
+            Exception: If table doesn't exist or insert fails
+        """
+        if not await self.verify_connection():
+            return None
+        
+        try:
+            message_data = {
+                "chat_session_id": session_id,
+                "user_id": user_id,
+                "role": role,
+                "content": content,
+                "metadata": metadata or {}
+            }
+            
+            result = self.supabase.table("chat_messages").insert(message_data).execute()
+            
+            if result.data:
+                # Update session's updated_at timestamp
+                asyncio.create_task(
+                    self._touch_chat_session(session_id)
+                )
+                return result.data[0]
+            return None
+            
+        except APIError as e:
+            print(f"Error appending chat message: {e}")
+            if hasattr(e, 'details') and e.details:
+                print(f"API Error details: {e.details}")
+            if hasattr(e, 'hint') and e.hint:
+                print(f"API Error hint: {e.hint}")
+            raise
+        except Exception as e:
+            print(f"Error appending chat message: {e}")
+            raise
+    
+    async def _touch_chat_session(self, session_id: str) -> None:
+        """Update a chat session's updated_at timestamp."""
+        try:
+            from datetime import timezone
+            self.supabase.table("chat_sessions") \
+                .update({"updated_at": datetime.now(timezone.utc).isoformat()}) \
+                .eq("id", session_id) \
+                .execute()
+        except Exception as e:
+            print(f"Error updating chat session timestamp: {e}")
+    
+    async def get_chat_messages(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Retrieve messages from a chat session.
+        
+        Args:
+            session_id: Chat session ID
+            user_id: Optional user ID for access control
+            limit: Maximum number of messages to return
+            offset: Number of messages to skip
+            
+        Returns:
+            List of message dicts ordered by created_at asc
+        """
+        if not await self.verify_connection():
+            return []
+        
+        try:
+            query = self.supabase.table("chat_messages") \
+                .select("*") \
+                .eq("chat_session_id", session_id) \
+                .order("created_at", desc=False) \
+                .limit(limit) \
+                .offset(offset)
+            
+            # Add user filter if using user-based RLS
+            if user_id and not self._use_service_key:
+                query = query.eq("user_id", user_id)
+            
+            result = query.execute()
+            return result.data or []
+            
+        except Exception as e:
+            print(f"Error retrieving chat messages: {e}")
+            return []
+    
+    async def get_chat_history(
+        self,
+        user_id: str,
+        limit_sessions: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent chat sessions with their latest messages.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            limit_sessions: Maximum number of sessions to return
+            
+        Returns:
+            List of session dicts with 'messages' key containing recent messages
+        """
+        sessions = await self.get_user_chat_sessions(user_id, limit=limit_sessions)
+        
+        for session in sessions:
+            session['messages'] = await self.get_chat_messages(
+                session['id'],
+                user_id=user_id,
+                limit=10
+            )
+        
+        return sessions
+    
+    # LLM Response Caching Methods
+    
+    def _generate_prompt_hash(
+        self,
+        prompt: str,
+        provider: str,
+        model: str,
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Generate a unique hash for an LLM prompt with provider metadata.
+        
+        Args:
+            prompt: Normalized prompt text
+            provider: LLM provider (e.g., 'openai', 'anthropic')
+            model: Model name (e.g., 'gpt-4', 'claude-3-opus')
+            parameters: Optional parameters dict (temperature, max_tokens, etc.)
+            
+        Returns:
+            SHA256 hash string
+        """
+        # Normalize prompt: remove extra whitespace
+        normalized_prompt = " ".join(prompt.strip().split())
+        
+        # Build hash string with provider metadata
+        hash_components = [normalized_prompt, provider, model]
+        
+        if parameters:
+            # Sort keys for consistent hashing
+            hash_components.append(json.dumps(parameters, sort_keys=True, cls=CustomJSONEncoder))
+        
+        hash_string = "||".join(hash_components)
+        return hashlib.sha256(hash_string.encode()).hexdigest()
+    
+    async def get_cached_llm_response(
+        self,
+        prompt: str,
+        provider: str,
+        model: str,
+        parameters: Optional[Dict[str, Any]] = None,
+        max_age_hours: int = 168  # 7 days default
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve cached LLM response if available and not expired.
+        
+        Expected table schema for llm_response_cache:
+        - id: uuid (primary key)
+        - prompt_hash: text (unique index)
+        - prompt: text
+        - provider: text
+        - model: text
+        - response: text
+        - metadata: jsonb (nullable - tokens, finish_reason, etc.)
+        - embedding: vector (nullable - for similarity search)
+        - created_at: timestamptz (auto)
+        - expires_at: timestamptz
+        - hit_count: integer (default 0)
+        
+        Args:
+            prompt: Prompt text
+            provider: LLM provider
+            model: Model name
+            parameters: Optional parameters dict
+            max_age_hours: Maximum age in hours for cache validity
+            
+        Returns:
+            Dict with cached response data including 'response', 'metadata', 'cached_at', 'hit_count'
+            or None if cache miss
+        """
+        if not await self.verify_connection():
+            return None
+        
+        prompt_hash = self._generate_prompt_hash(prompt, provider, model, parameters)
+        
+        try:
+            result = self.supabase.table("llm_response_cache") \
+                .select("*") \
+                .eq("prompt_hash", prompt_hash) \
+                .gte("expires_at", datetime.now().isoformat()) \
+                .limit(1) \
+                .execute()
+            
+            if result.data:
+                cache_entry = result.data[0]
+                
+                # Update hit count asynchronously
+                asyncio.create_task(
+                    self._update_llm_cache_hit_count(cache_entry["id"])
+                )
+                
+                return {
+                    "cached": True,
+                    "response": cache_entry["response"],
+                    "metadata": cache_entry.get("metadata", {}),
+                    "cached_at": cache_entry["created_at"],
+                    "cache_id": cache_entry["id"],
+                    "hit_count": cache_entry.get("hit_count", 0),
+                    "provider": cache_entry["provider"],
+                    "model": cache_entry["model"]
+                }
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error retrieving cached LLM response: {e}")
+            return None
+    
+    async def _update_llm_cache_hit_count(self, cache_id: str) -> None:
+        """Update the hit count for an LLM cache entry."""
+        try:
+            current_result = self.supabase.table("llm_response_cache") \
+                .select("hit_count") \
+                .eq("id", cache_id) \
+                .execute()
+            
+            if current_result.data:
+                current_count = current_result.data[0]["hit_count"] or 0
+                self.supabase.table("llm_response_cache") \
+                    .update({"hit_count": current_count + 1}) \
+                    .eq("id", cache_id) \
+                    .execute()
+        except Exception as e:
+            print(f"Error updating LLM cache hit count: {e}")
+    
+    async def cache_llm_response(
+        self,
+        prompt: str,
+        provider: str,
+        model: str,
+        response: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        embedding: Optional[List[float]] = None,
+        ttl_hours: int = 168  # 7 days default
+    ) -> bool:
+        """Cache an LLM response with metadata.
+        
+        Args:
+            prompt: Prompt text
+            provider: LLM provider
+            model: Model name
+            response: LLM response text
+            metadata: Optional metadata (tokens, finish_reason, etc.)
+            parameters: Optional parameters used for generation
+            embedding: Optional embedding vector for similarity search
+            ttl_hours: Time-to-live in hours
+            
+        Returns:
+            True if caching succeeded, False otherwise
+        """
+        if not await self.verify_connection():
+            return False
+        
+        # Don't cache empty responses
+        if not response or not response.strip():
+            return False
+        
+        prompt_hash = self._generate_prompt_hash(prompt, provider, model, parameters)
+        expires_at = datetime.now() + timedelta(hours=ttl_hours)
+        
+        try:
+            cache_data = {
+                "prompt_hash": prompt_hash,
+                "prompt": prompt,
+                "provider": provider,
+                "model": model,
+                "response": response,
+                "metadata": metadata or {},
+                "expires_at": expires_at.isoformat(),
+                "hit_count": 0
+            }
+            
+            # Add embedding if provided
+            if embedding:
+                cache_data["embedding"] = embedding
+            
+            # Upsert to handle duplicate prompt hashes
+            result = self.supabase.table("llm_response_cache") \
+                .upsert(cache_data, on_conflict="prompt_hash") \
+                .execute()
+            
+            if result.data:
+                print(f"Cached LLM response (provider={provider}, model={model}), expires at {expires_at}")
+                return True
+            
+            return False
+            
+        except APIError as e:
+            print(f"Error caching LLM response: {e}")
+            if hasattr(e, 'details') and e.details:
+                print(f"API Error details: {e.details}")
+            if hasattr(e, 'hint') and e.hint:
+                print(f"API Error hint: {e.hint}")
+            return False
+        except Exception as e:
+            print(f"Error caching LLM response: {e}")
+            return False
+    
+    async def get_similar_cached_prompts(
+        self,
+        embedding: List[float],
+        limit: int = 5,
+        similarity_threshold: float = 0.8
+    ) -> List[Dict[str, Any]]:
+        """Find similar cached prompts using vector similarity search.
+        
+        This requires pgvector extension and a vector column in llm_response_cache.
+        
+        Args:
+            embedding: Query embedding vector
+            limit: Maximum number of similar prompts to return
+            similarity_threshold: Minimum similarity score (0-1)
+            
+        Returns:
+            List of similar cache entries with similarity scores
+        """
+        if not await self.verify_connection():
+            return []
+        
+        try:
+            # This is a placeholder - actual implementation depends on pgvector setup
+            # Would use something like: .rpc('match_prompts', {'query_embedding': embedding, ...})
+            print("Vector similarity search not yet implemented - requires pgvector setup")
+            return []
+        except Exception as e:
+            print(f"Error finding similar cached prompts: {e}")
+            return []
+    
+    async def cleanup_expired_llm_cache(self) -> int:
+        """Clean up expired LLM cache entries.
+        
+        Returns:
+            Number of entries deleted
+        """
+        if not await self.verify_connection():
+            return 0
+        
+        try:
+            expired_result = self.supabase.table("llm_response_cache") \
+                .select("id") \
+                .lt("expires_at", datetime.now().isoformat()) \
+                .execute()
+            
+            if expired_result.data:
+                expired_ids = [row["id"] for row in expired_result.data]
+                
+                self.supabase.table("llm_response_cache") \
+                    .delete() \
+                    .in_("id", expired_ids) \
+                    .execute()
+                
+                print(f"Cleaned up {len(expired_ids)} expired LLM cache entries")
+                return len(expired_ids)
+            
+            return 0
+            
+        except Exception as e:
+            print(f"Error cleaning up expired LLM cache: {e}")
+            return 0
+    
+    # Token Usage Tracking Methods
+    
+    async def record_token_usage(
+        self,
+        user_id: str,
+        tokens_consumed: int,
+        provider: str,
+        model: str,
+        request_metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Record token usage for a user.
+        
+        Expected table schema for user_usage_stats:
+        - id: uuid (primary key)
+        - user_id: text (foreign key to user_profiles)
+        - period_start: date (start of the tracking period)
+        - period_end: date (end of the tracking period)
+        - tokens_consumed: bigint
+        - requests_count: integer
+        - quota_limit: bigint (nullable - daily/monthly limit)
+        - created_at: timestamptz (auto)
+        - updated_at: timestamptz (auto)
+        - metadata: jsonb (nullable - provider/model breakdown)
+        
+        Args:
+            user_id: User ID from Supabase auth
+            tokens_consumed: Number of tokens consumed
+            provider: LLM provider
+            model: Model name
+            request_metadata: Optional request metadata
+            
+        Returns:
+            True if recording succeeded, False otherwise
+        """
+        if not await self.verify_connection():
+            return False
+        
+        if tokens_consumed <= 0:
+            return True
+        
+        try:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            period_end = period_start + timedelta(days=1)
+            
+            # Check if we have a stats record for today
+            result = self.supabase.table("user_usage_stats") \
+                .select("*") \
+                .eq("user_id", user_id) \
+                .eq("period_start", period_start.date().isoformat()) \
+                .limit(1) \
+                .execute()
+            
+            if result.data:
+                # Update existing record
+                current_stats = result.data[0]
+                current_tokens = current_stats.get("tokens_consumed", 0)
+                current_requests = current_stats.get("requests_count", 0)
+                current_metadata = current_stats.get("metadata", {})
+                
+                # Update provider/model breakdown
+                if "providers" not in current_metadata:
+                    current_metadata["providers"] = {}
+                if provider not in current_metadata["providers"]:
+                    current_metadata["providers"][provider] = {}
+                if model not in current_metadata["providers"][provider]:
+                    current_metadata["providers"][provider][model] = {
+                        "tokens": 0,
+                        "requests": 0
+                    }
+                
+                current_metadata["providers"][provider][model]["tokens"] += tokens_consumed
+                current_metadata["providers"][provider][model]["requests"] += 1
+                
+                self.supabase.table("user_usage_stats") \
+                    .update({
+                        "tokens_consumed": current_tokens + tokens_consumed,
+                        "requests_count": current_requests + 1,
+                        "metadata": current_metadata,
+                        "updated_at": now.isoformat()
+                    }) \
+                    .eq("id", current_stats["id"]) \
+                    .execute()
+            else:
+                # Create new record
+                metadata = {
+                    "providers": {
+                        provider: {
+                            model: {
+                                "tokens": tokens_consumed,
+                                "requests": 1
+                            }
+                        }
+                    }
+                }
+                
+                if request_metadata:
+                    metadata["request_metadata"] = request_metadata
+                
+                self.supabase.table("user_usage_stats") \
+                    .insert({
+                        "user_id": user_id,
+                        "period_start": period_start.date().isoformat(),
+                        "period_end": period_end.date().isoformat(),
+                        "tokens_consumed": tokens_consumed,
+                        "requests_count": 1,
+                        "metadata": metadata
+                    }) \
+                    .execute()
+            
+            return True
+            
+        except APIError as e:
+            print(f"Error recording token usage: {e}")
+            if hasattr(e, 'details') and e.details:
+                print(f"API Error details: {e.details}")
+            if hasattr(e, 'hint') and e.hint:
+                print(f"API Error hint: {e.hint}")
+            return False
+        except Exception as e:
+            print(f"Error recording token usage: {e}")
+            return False
+    
+    async def get_user_token_usage(
+        self,
+        user_id: str,
+        days: int = 30
+    ) -> Dict[str, Any]:
+        """Get token usage statistics for a user over a period.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            days: Number of days to look back
+            
+        Returns:
+            Dict with total_tokens, total_requests, daily_breakdown, provider_breakdown
+        """
+        if not await self.verify_connection():
+            return {
+                "total_tokens": 0,
+                "total_requests": 0,
+                "daily_breakdown": [],
+                "provider_breakdown": {}
+            }
+        
+        try:
+            from datetime import timezone
+            start_date = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+            
+            result = self.supabase.table("user_usage_stats") \
+                .select("*") \
+                .eq("user_id", user_id) \
+                .gte("period_start", start_date.isoformat()) \
+                .order("period_start", desc=True) \
+                .execute()
+            
+            daily_stats = result.data or []
+            
+            total_tokens = sum(stat.get("tokens_consumed", 0) for stat in daily_stats)
+            total_requests = sum(stat.get("requests_count", 0) for stat in daily_stats)
+            
+            # Aggregate provider breakdown
+            provider_breakdown = {}
+            for stat in daily_stats:
+                metadata = stat.get("metadata", {})
+                providers = metadata.get("providers", {})
+                
+                for provider, models in providers.items():
+                    if provider not in provider_breakdown:
+                        provider_breakdown[provider] = {}
+                    
+                    for model, usage in models.items():
+                        if model not in provider_breakdown[provider]:
+                            provider_breakdown[provider][model] = {
+                                "tokens": 0,
+                                "requests": 0
+                            }
+                        
+                        provider_breakdown[provider][model]["tokens"] += usage.get("tokens", 0)
+                        provider_breakdown[provider][model]["requests"] += usage.get("requests", 0)
+            
+            return {
+                "total_tokens": total_tokens,
+                "total_requests": total_requests,
+                "daily_breakdown": daily_stats,
+                "provider_breakdown": provider_breakdown
+            }
+            
+        except Exception as e:
+            print(f"Error getting user token usage: {e}")
+            return {
+                "total_tokens": 0,
+                "total_requests": 0,
+                "daily_breakdown": [],
+                "provider_breakdown": {}
+            }
+    
+    async def check_user_quota(
+        self,
+        user_id: str,
+        quota_period: str = "daily"
+    ) -> Dict[str, Any]:
+        """Check if a user has exceeded their token quota.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            quota_period: 'daily' or 'monthly'
+            
+        Returns:
+            Dict with quota_limit, tokens_used, remaining, is_over_quota
+        """
+        if not await self.verify_connection():
+            return {
+                "quota_limit": None,
+                "tokens_used": 0,
+                "remaining": None,
+                "is_over_quota": False
+            }
+        
+        try:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            
+            if quota_period == "daily":
+                period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                days_to_check = 1
+            else:  # monthly
+                period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                days_to_check = 31
+            
+            # Get usage for the period
+            usage_stats = await self.get_user_token_usage(user_id, days=days_to_check)
+            tokens_used = usage_stats["total_tokens"]
+            
+            # Get user's quota limit (could be from user preferences or a separate quota table)
+            user_prefs = await self.get_user_preferences(user_id)
+            quota_limit = None
+            
+            if user_prefs and "preferences" in user_prefs:
+                prefs = user_prefs["preferences"]
+                if quota_period == "daily":
+                    quota_limit = prefs.get("daily_token_quota")
+                else:
+                    quota_limit = prefs.get("monthly_token_quota")
+            
+            # Calculate remaining and check if over quota
+            is_over_quota = False
+            remaining = None
+            
+            if quota_limit is not None:
+                remaining = max(0, quota_limit - tokens_used)
+                is_over_quota = tokens_used >= quota_limit
+            
+            return {
+                "quota_limit": quota_limit,
+                "tokens_used": tokens_used,
+                "remaining": remaining,
+                "is_over_quota": is_over_quota,
+                "quota_period": quota_period
+            }
+            
+        except Exception as e:
+            print(f"Error checking user quota: {e}")
+            return {
+                "quota_limit": None,
+                "tokens_used": 0,
+                "remaining": None,
+                "is_over_quota": False
+            }
