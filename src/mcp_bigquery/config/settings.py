@@ -9,7 +9,17 @@ load_dotenv()
 
 
 class ServerConfig:
-    """Configuration class to store server configurations."""
+    """Configuration class to store server configurations.
+    
+    Environment Variables:
+        PROJECT_ID: Google Cloud project ID (required)
+        LOCATION: BigQuery location (default: US)
+        KEY_FILE: Path to service account key file
+        SUPABASE_URL: Supabase project URL
+        SUPABASE_KEY: Supabase anonymous key
+        SUPABASE_SERVICE_KEY: Supabase service role key (for RLS bypass)
+        SUPABASE_JWT_SECRET: JWT secret for validating Supabase tokens
+    """
 
     def __init__(
         self,
@@ -18,12 +28,16 @@ class ServerConfig:
         key_file: Optional[str] = None,
         supabase_url: Optional[str] = None,
         supabase_key: Optional[str] = None,
+        supabase_service_key: Optional[str] = None,
+        supabase_jwt_secret: Optional[str] = None,
     ):
         self.project_id = project_id
         self.location = location
         self.key_file = key_file
         self.supabase_url = supabase_url
         self.supabase_key = supabase_key
+        self.supabase_service_key = supabase_service_key
+        self.supabase_jwt_secret = supabase_jwt_secret
 
     def validate(self) -> None:
         """Validate the configuration settings."""
@@ -57,4 +71,6 @@ class ServerConfig:
             key_file=os.getenv("KEY_FILE"),
             supabase_url=os.getenv("SUPABASE_URL"),
             supabase_key=os.getenv("SUPABASE_KEY"),
+            supabase_service_key=os.getenv("SUPABASE_SERVICE_KEY"),
+            supabase_jwt_secret=os.getenv("SUPABASE_JWT_SECRET"),
         )
