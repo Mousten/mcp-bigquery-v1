@@ -55,16 +55,16 @@ def mock_supabase_kb():
         "metadata": {"name": "Test User"}
     })
     kb.get_user_roles = AsyncMock(return_value=[
-        {"role_id": "role-1", "role_name": "analyst"},
-        {"role_id": "role-2", "role_name": "viewer"}
+        {"user_id": "user-123", "role_id": "role-1", "role_name": "analyst"},
+        {"user_id": "user-123", "role_id": "role-2", "role_name": "viewer"}
     ])
     kb.get_role_permissions = AsyncMock(return_value=[
-        {"permission": "query:execute"},
-        {"permission": "cache:read"}
+        {"role_id": "role-1", "permission": "query:execute"},
+        {"role_id": "role-1", "permission": "cache:read"}
     ])
     kb.get_role_dataset_access = AsyncMock(return_value=[
-        {"dataset_id": "public_data", "table_id": None},
-        {"dataset_id": "analytics", "table_id": "events"}
+        {"role_id": "role-1", "dataset_id": "public_data", "table_id": None},
+        {"role_id": "role-1", "dataset_id": "analytics", "table_id": "events"}
     ])
     return kb
 

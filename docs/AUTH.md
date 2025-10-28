@@ -4,7 +4,7 @@ This document describes the Supabase-backed authentication and RBAC (Role-Based 
 
 ## Overview
 
-The authentication layer provides JWT-based authentication using Supabase tokens and role-based access control for BigQuery datasets and tables.
+The authentication layer provides JWT-based authentication using Supabase tokens and role-based access control for BigQuery datasets and tables. All configuration and data models use **Pydantic v2** for robust validation and type safety.
 
 ## Environment Variables
 
@@ -14,6 +14,18 @@ Configure authentication by setting these environment variables:
 - `SUPABASE_SERVICE_KEY`: Supabase service role key (for RBAC queries)
 - `SUPABASE_JWT_SECRET`: JWT secret for validating Supabase tokens
 
+## Pydantic Models
+
+The auth system uses Pydantic v2 models for validation:
+
+- **`UserContext`**: Main user context with authentication and authorization data
+- **`UserProfile`**: User profile data from Supabase
+- **`UserRole`**: User role assignment
+- **`RolePermission`**: Permission associated with a role
+- **`DatasetAccess`**: Dataset/table access rule for a role
+
+All models provide automatic validation, type checking, and serialization.
+
 ## Database Schema
 
 The following Supabase tables are required for RBAC:
@@ -21,20 +33,25 @@ The following Supabase tables are required for RBAC:
 ### `user_profiles`
 - `user_id` (text, primary key): User ID from Supabase auth
 - `metadata` (jsonb): Additional user metadata
+- `created_at` (timestamp, optional): Profile creation timestamp
+- `updated_at` (timestamp, optional): Last update timestamp
 
 ### `user_roles`
 - `user_id` (text): User ID
 - `role_id` (text): Role identifier
 - `role_name` (text): Role display name
+- `assigned_at` (timestamp, optional): Role assignment timestamp
 
 ### `role_permissions`
 - `role_id` (text): Role identifier
 - `permission` (text): Permission string (e.g., "query:execute", "cache:read")
+- `description` (text, optional): Permission description
 
 ### `role_dataset_access`
 - `role_id` (text): Role identifier
 - `dataset_id` (text): BigQuery dataset identifier (use "*" for wildcard)
 - `table_id` (text, optional): BigQuery table identifier (use "*" for wildcard, null for all tables)
+- `access_level` (text, optional): Access level (default: "read")
 
 ## Usage
 
@@ -129,6 +146,27 @@ Handlers should catch these and translate them to appropriate HTTP status codes:
 
 - `AuthenticationError` → HTTP 401 Unauthorized
 - `AuthorizationError` → HTTP 403 Forbidden
+
+### Pydantic Validation Errors
+
+When creating models with invalid data, Pydantic will raise `ValidationError`:
+
+```python
+from pydantic import ValidationError
+from mcp_bigquery.core.auth import UserContext
+
+try:
+    # This will fail - empty user_id
+    context = UserContext(user_id="")
+except ValidationError as e:
+    print(f"Validation error: {e}")
+    # Handle validation errors appropriately
+```
+
+Common validation errors:
+- Empty or whitespace-only `user_id`
+- Invalid email format (missing '@')
+- Empty or whitespace-only `dataset_id` in access rules
 
 ## Permissions
 

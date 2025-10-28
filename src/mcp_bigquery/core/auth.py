@@ -12,9 +12,9 @@ Environment Variables:
 import os
 import jwt
 from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Set
 from functools import lru_cache
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class AuthenticationError(Exception):
@@ -27,8 +27,46 @@ class AuthorizationError(Exception):
     pass
 
 
-@dataclass
-class UserContext:
+class UserProfile(BaseModel):
+    """User profile data from Supabase."""
+    user_id: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class UserRole(BaseModel):
+    """User role assignment from Supabase."""
+    user_id: str
+    role_id: str
+    role_name: str
+    assigned_at: Optional[datetime] = None
+
+
+class RolePermission(BaseModel):
+    """Permission associated with a role."""
+    role_id: str
+    permission: str
+    description: Optional[str] = None
+
+
+class DatasetAccess(BaseModel):
+    """Dataset/table access rule for a role."""
+    role_id: str
+    dataset_id: str
+    table_id: Optional[str] = None
+    access_level: Optional[str] = "read"
+    
+    @field_validator('dataset_id')
+    @classmethod
+    def validate_dataset_id(cls, v: str) -> str:
+        """Validate dataset_id is not empty."""
+        if not v or not v.strip():
+            raise ValueError("dataset_id cannot be empty")
+        return v.strip()
+
+
+class UserContext(BaseModel):
     """User context with authentication and authorization information.
     
     Attributes:
@@ -41,14 +79,32 @@ class UserContext:
         metadata: Additional user metadata from profile
         token_expires_at: JWT expiration timestamp
     """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     user_id: str
     email: Optional[str] = None
-    roles: List[str] = field(default_factory=list)
-    permissions: Set[str] = field(default_factory=set)
-    allowed_datasets: Set[str] = field(default_factory=set)
-    allowed_tables: Dict[str, Set[str]] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    roles: List[str] = Field(default_factory=list)
+    permissions: Set[str] = Field(default_factory=set)
+    allowed_datasets: Set[str] = Field(default_factory=set)
+    allowed_tables: Dict[str, Set[str]] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     token_expires_at: Optional[datetime] = None
+    
+    @field_validator('user_id')
+    @classmethod
+    def validate_user_id(cls, v: str) -> str:
+        """Validate user_id is not empty."""
+        if not v or not v.strip():
+            raise ValueError("user_id cannot be empty")
+        return v.strip()
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: Optional[str]) -> Optional[str]:
+        """Validate email format if provided."""
+        if v and '@' not in v:
+            raise ValueError("Invalid email format")
+        return v
     
     def has_permission(self, permission: str) -> bool:
         """Check if user has a specific permission."""
@@ -252,35 +308,70 @@ async def _hydrate_user_context(context: UserContext, supabase_kb: Any) -> None:
         supabase_kb: SupabaseKnowledgeBase instance
     """
     # Load user profile
-    profile = await supabase_kb.get_user_profile(context.user_id)
-    if profile:
-        context.metadata.update(profile.get("metadata", {}))
+    profile_data = await supabase_kb.get_user_profile(context.user_id)
+    if profile_data:
+        try:
+            profile = UserProfile(**profile_data)
+            context.metadata.update(profile.metadata)
+        except Exception as e:
+            print(f"Warning: Failed to validate user profile: {e}")
+            # Fallback to raw data
+            context.metadata.update(profile_data.get("metadata", {}))
     
     # Load user roles
-    user_roles = await supabase_kb.get_user_roles(context.user_id)
-    context.roles = [role["role_name"] for role in user_roles]
+    user_roles_data = await supabase_kb.get_user_roles(context.user_id)
+    user_roles = []
+    for role_data in user_roles_data:
+        try:
+            role = UserRole(**role_data)
+            user_roles.append(role)
+            context.roles.append(role.role_name)
+        except Exception as e:
+            print(f"Warning: Failed to validate user role: {e}")
+            # Fallback to raw data
+            context.roles.append(role_data.get("role_name", ""))
     
     # Load permissions and dataset access for each role
     for role in user_roles:
-        role_id = role.get("role_id") or role.get("role_name")
+        role_id = role.role_id
         
         # Load role permissions
-        permissions = await supabase_kb.get_role_permissions(role_id)
-        for perm in permissions:
-            context.permissions.add(perm["permission"])
+        permissions_data = await supabase_kb.get_role_permissions(role_id)
+        for perm_data in permissions_data:
+            try:
+                perm = RolePermission(**perm_data)
+                context.permissions.add(perm.permission)
+            except Exception as e:
+                print(f"Warning: Failed to validate permission: {e}")
+                # Fallback to raw data
+                context.permissions.add(perm_data.get("permission", ""))
         
         # Load dataset/table access
-        dataset_access = await supabase_kb.get_role_dataset_access(role_id)
-        for access in dataset_access:
-            dataset_id = normalize_identifier(access["dataset_id"])
-            context.allowed_datasets.add(dataset_id)
-            
-            # Handle table-level access
-            if "table_id" in access and access["table_id"]:
-                if dataset_id not in context.allowed_tables:
-                    context.allowed_tables[dataset_id] = set()
-                table_id = normalize_identifier(access["table_id"])
-                context.allowed_tables[dataset_id].add(table_id)
+        dataset_access_data = await supabase_kb.get_role_dataset_access(role_id)
+        for access_data in dataset_access_data:
+            try:
+                access = DatasetAccess(**access_data)
+                dataset_id = normalize_identifier(access.dataset_id)
+                context.allowed_datasets.add(dataset_id)
+                
+                # Handle table-level access
+                if access.table_id:
+                    if dataset_id not in context.allowed_tables:
+                        context.allowed_tables[dataset_id] = set()
+                    table_id = normalize_identifier(access.table_id)
+                    context.allowed_tables[dataset_id].add(table_id)
+            except Exception as e:
+                print(f"Warning: Failed to validate dataset access: {e}")
+                # Fallback to raw data
+                dataset_id = normalize_identifier(access_data.get("dataset_id", ""))
+                if dataset_id:
+                    context.allowed_datasets.add(dataset_id)
+                    
+                    if "table_id" in access_data and access_data["table_id"]:
+                        if dataset_id not in context.allowed_tables:
+                            context.allowed_tables[dataset_id] = set()
+                        table_id = normalize_identifier(access_data["table_id"])
+                        context.allowed_tables[dataset_id].add(table_id)
 
 
 def normalize_identifier(identifier: str) -> str:
