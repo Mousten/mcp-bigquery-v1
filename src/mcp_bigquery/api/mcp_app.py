@@ -16,6 +16,7 @@ from ..handlers.tools import (
     cache_management_handler,
 )
 from ..core.supabase_client import SupabaseKnowledgeBase
+from ..core.auth import UserContext, AuthenticationError
 from postgrest.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -88,11 +89,45 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                 logger.debug(f"API Error details: {e.details}")
         except Exception as e:
             logger.debug(f"Failed to log {event_type}: {e}")
+    
+    async def get_user_context_from_token(auth_token: Optional[str] = None) -> UserContext:
+        """Create UserContext from authentication token.
+        
+        Args:
+            auth_token: JWT authentication token
+            
+        Returns:
+            UserContext instance
+            
+        Raises:
+            ValueError: If authentication fails or token is missing
+        """
+        if not auth_token:
+            raise ValueError("Authentication token is required")
+        
+        try:
+            # Create user context from token
+            user_context = await UserContext.from_token_async(
+                token=auth_token,
+                supabase_kb=knowledge_base if await ensure_supabase_connection() else None
+            )
+            
+            if user_context.is_expired():
+                raise ValueError("Authentication token has expired")
+            
+            return user_context
+        except AuthenticationError as e:
+            raise ValueError(f"Authentication failed: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Error processing authentication: {str(e)}")
 
     @mcp_app.resource("resources://list")
-    async def list_resources_mcp() -> dict:
+    async def list_resources_mcp(auth_token: Optional[str] = None) -> dict:
         try:
-            result = await list_resources_handler(bigquery_client, config)
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            result = await list_resources_handler(bigquery_client, config, user_context)
             if isinstance(result, tuple):
                 result, _ = result
             
@@ -100,25 +135,29 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
             await log_supabase_event(
                 "resource_list",
                 {"resource_count": len(result.get("resources", []))},
-                getattr(config, 'DEFAULT_USER_ID', None)
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error listing resources: {e}")
-            await log_supabase_event(
-                "resource_list_failed",
-                {"error": str(e)},
-                getattr(config, 'DEFAULT_USER_ID', None)
-            )
             raise
 
     @mcp_app.resource("bigquery://{project_id}/{dataset_id}/{table_id}")
     async def read_resource_mcp(
-        project_id: str, dataset_id: str, table_id: str
+        project_id: str,
+        dataset_id: str,
+        table_id: str,
+        auth_token: Optional[str] = None
     ) -> dict:
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
             result = await read_resource_handler(
-                bigquery_client, config, project_id, dataset_id, table_id
+                bigquery_client, config, project_id, dataset_id, table_id, user_context
             )
             if isinstance(result, tuple):
                 result, _ = result
@@ -131,47 +170,42 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "dataset_id": dataset_id,
                     "table_id": table_id,
                 },
-                getattr(config, 'DEFAULT_USER_ID', None)
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error reading resource {project_id}.{dataset_id}.{table_id}: {e}")
-            await log_supabase_event(
-                "resource_read_failed",
-                {
-                    "project_id": project_id,
-                    "dataset_id": dataset_id,
-                    "table_id": table_id,
-                    "error": str(e)
-                },
-                getattr(config, 'DEFAULT_USER_ID', None)
-            )
             raise
 
     @mcp_app.tool(
         name="execute_bigquery_sql", 
-        description="Execute a read-only SQL query on BigQuery with intelligent caching, performance tracking, and automatic schema detection."
+        description="Execute a read-only SQL query on BigQuery with intelligent caching, performance tracking, and automatic schema detection. Requires authentication token."
     )
     async def execute_bigquery_sql(
-        sql: str, 
+        sql: str,
+        auth_token: str,
         maximum_bytes_billed: int = 314572800,
         use_cache: bool = True,
-        user_id: Optional[str] = None,
         force_refresh: bool = False
     ) -> dict:
-        effective_user_id = user_id or getattr(config, 'DEFAULT_USER_ID', None)
         effective_use_cache = use_cache and not force_refresh
         supabase_available = await ensure_supabase_connection()
         
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
             result = await query_tool_handler(
                 bigquery_client=bigquery_client,
                 event_manager=event_manager,
                 sql=sql,
+                user_context=user_context,
                 maximum_bytes_billed=maximum_bytes_billed,
                 knowledge_base=knowledge_base if supabase_available else None,
-                use_cache=effective_use_cache and supabase_available,
-                user_id=effective_user_id
+                use_cache=effective_use_cache and supabase_available
             )
             if isinstance(result, tuple):
                 result, _ = result
@@ -180,60 +214,59 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
             await log_supabase_event(
                 "query_execution",
                 {
-                    "sql": sql[:200] + "..." if len(sql) > 200 else sql,  # Truncate long SQL
+                    "sql": sql[:200] + "..." if len(sql) > 200 else sql,
                     "maximum_bytes_billed": maximum_bytes_billed,
                     "use_cache": effective_use_cache,
                     "force_refresh": force_refresh,
                     "rows_returned": len(result.get("rows", [])) if result.get("rows") else 0,
                     "cached": result.get("cached", False)
                 },
-                effective_user_id
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error executing BigQuery SQL: {e}")
-            await log_supabase_event(
-                "query_execution_failed",
-                {
-                    "sql": sql[:200] + "..." if len(sql) > 200 else sql,
-                    "error": str(e)
-                },
-                effective_user_id
-            )
             raise
 
     @mcp_app.tool(
         name="get_datasets",
-        description="Retrieve the list of all datasets in the current project with metadata."
+        description="Retrieve the list of all datasets the user has access to. Requires authentication token."
     )
-    async def get_datasets() -> dict:
+    async def get_datasets(auth_token: str) -> dict:
         try:
-            result = await get_datasets_handler(bigquery_client)
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            result = await get_datasets_handler(bigquery_client, user_context)
             if isinstance(result, tuple):
                 result, _ = result
             
             await log_supabase_event(
                 "datasets_list",
                 {"dataset_count": len(result.get("datasets", []))},
-                getattr(config, 'DEFAULT_USER_ID', None)
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error getting datasets: {e}")
-            await log_supabase_event(
-                "datasets_list_failed",
-                {"error": str(e)},
-                getattr(config, 'DEFAULT_USER_ID', None)
-            )
             raise
 
     @mcp_app.tool(
         name="get_tables", 
-        description="Retrieve all tables within a specific dataset with metadata and documentation."
+        description="Retrieve all tables within a specific dataset that the user has access to. Requires authentication token."
     )
-    async def get_tables(dataset_id: str) -> dict:
+    async def get_tables(dataset_id: str, auth_token: str) -> dict:
         try:
-            result = await get_tables_handler(bigquery_client, dataset_id)
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            result = await get_tables_handler(bigquery_client, dataset_id, user_context)
             if isinstance(result, tuple):
                 result, _ = result
             
@@ -257,30 +290,32 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
             await log_supabase_event(
                 "tables_list",
                 {"dataset_id": dataset_id, "table_count": len(result.get("tables", []))},
-                getattr(config, 'DEFAULT_USER_ID', None)
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error getting tables for dataset {dataset_id}: {e}")
-            await log_supabase_event(
-                "tables_list_failed",
-                {"dataset_id": dataset_id, "error": str(e)},
-                getattr(config, 'DEFAULT_USER_ID', None)
-            )
             raise
 
     @mcp_app.tool(
         name="get_table_schema",
-        description="Retrieve comprehensive schema details for a specific table including column documentation and data quality insights."
+        description="Retrieve comprehensive schema details for a specific table including column documentation and data quality insights. Requires authentication token."
     )
     async def get_table_schema(
-        dataset_id: str, 
+        dataset_id: str,
         table_id: str,
+        auth_token: str,
         include_samples: bool = True,
         include_documentation: bool = True
     ) -> dict:
         try:
-            result = await get_table_schema_handler(bigquery_client, dataset_id, table_id)
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            result = await get_table_schema_handler(bigquery_client, dataset_id, table_id, user_context)
             if isinstance(result, tuple):
                 result, _ = result
             
@@ -308,33 +343,33 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "include_samples": include_samples,
                     "include_documentation": include_documentation,
                 },
-                getattr(config, 'DEFAULT_USER_ID', None)
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error getting schema for {dataset_id}.{table_id}: {e}")
-            await log_supabase_event(
-                "schema_access_failed",
-                {"dataset_id": dataset_id, "table_id": table_id, "error": str(e)},
-                getattr(config, 'DEFAULT_USER_ID', None)
-            )
             raise
 
     @mcp_app.tool(
         name="get_query_suggestions",
-        description="Get AI-powered query recommendations based on table schemas, usage patterns, and business context."
+        description="Get AI-powered query recommendations based on table schemas, usage patterns, and business context. Requires authentication token."
     )
     async def get_query_suggestions(
+        auth_token: str,
         tables_mentioned: Optional[List[str]] = None,
         query_context: Optional[str] = None,
-        limit: int = 5,
-        user_id: Optional[str] = None
+        limit: int = 5
     ) -> dict:
-        effective_user_id = user_id or getattr(config, 'DEFAULT_USER_ID', None)
-        supabase_available = await ensure_supabase_connection()
-        if not (await ensure_supabase_connection() and knowledge_base is not None):
-            return {"error": "Supabase knowledge base unavailable"}
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            supabase_available = await ensure_supabase_connection()
+            if not (supabase_available and knowledge_base is not None):
+                return {"error": "Supabase knowledge base unavailable"}
             result = await get_query_suggestions_handler(
                 bigquery_client=bigquery_client,
                 knowledge_base=knowledge_base,
@@ -352,42 +387,42 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "context_provided": bool(query_context),
                     "suggestions_count": len(result.get("suggestions", [])),
                 },
-                effective_user_id
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error getting query suggestions: {e}")
-            await log_supabase_event(
-                "query_suggestions_failed",
-                {"error": str(e)},
-                effective_user_id
-            )
             raise
 
     @mcp_app.tool(
         name="explain_table",
-        description="Get comprehensive table documentation including schema, business context, usage patterns, and data quality insights."
+        description="Get comprehensive table documentation including schema, business context, usage patterns, and data quality insights. Requires authentication token."
     )
     async def explain_table(
         project_id: str,
         dataset_id: str,
         table_id: str,
-        include_usage_stats: bool = True,
-        user_id: Optional[str] = None
+        auth_token: str,
+        include_usage_stats: bool = True
     ) -> dict:
-        effective_user_id = user_id or getattr(config, 'DEFAULT_USER_ID', None)
-
-        supabase_available = await ensure_supabase_connection()
-        if not (supabase_available and knowledge_base is not None):
-            return {"error": "Supabase knowledge base unavailable"}
-
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+
+            supabase_available = await ensure_supabase_connection()
+            if not (supabase_available and knowledge_base is not None):
+                return {"error": "Supabase knowledge base unavailable"}
+
             result = await explain_table_handler(
                 bigquery_client=bigquery_client,
                 knowledge_base=knowledge_base,
                 project_id=project_id,
                 dataset_id=dataset_id,
-                table_id=table_id
+                table_id=table_id,
+                user_context=user_context
             )
             if isinstance(result, tuple):
                 result, _ = result
@@ -400,16 +435,14 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "table_id": table_id,
                     "include_usage_stats": include_usage_stats,
                 },
-                effective_user_id
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error explaining table {project_id}.{dataset_id}.{table_id}: {e}")
-            await log_supabase_event(
-                "table_explanation_failed",
-                {"project_id": project_id, "dataset_id": dataset_id, "table_id": table_id, "error": str(e)},
-                effective_user_id
-            )
             raise
 
     @mcp_app.tool(
