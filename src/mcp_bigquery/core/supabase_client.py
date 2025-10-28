@@ -478,3 +478,135 @@ class SupabaseKnowledgeBase:
         except Exception as e:
             print(f"Error invalidating cache for table: {e}")
             return False
+    
+    # RBAC Methods
+    
+    async def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user profile from Supabase.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            
+        Returns:
+            User profile dict or None if not found
+        """
+        if not await self.verify_connection():
+            return None
+        
+        # Check cache first
+        from .auth import _get_cached_role_data, _set_cached_role_data
+        cache_key = f"user_profile:{user_id}"
+        cached = _get_cached_role_data(cache_key)
+        if cached is not None:
+            return cached
+        
+        try:
+            result = self.supabase.table("user_profiles") \
+                .select("*") \
+                .eq("user_id", user_id) \
+                .limit(1) \
+                .execute()
+            
+            profile = result.data[0] if result.data else None
+            if profile:
+                _set_cached_role_data(cache_key, profile)
+            return profile
+        except Exception as e:
+            print(f"Error fetching user profile: {e}")
+            return None
+    
+    async def get_user_roles(self, user_id: str) -> List[Dict[str, Any]]:
+        """Retrieve roles assigned to a user.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            
+        Returns:
+            List of role dicts with role_id, role_name, etc.
+        """
+        if not await self.verify_connection():
+            return []
+        
+        # Check cache first
+        from .auth import _get_cached_role_data, _set_cached_role_data
+        cache_key = f"user_roles:{user_id}"
+        cached = _get_cached_role_data(cache_key)
+        if cached is not None:
+            return cached
+        
+        try:
+            result = self.supabase.table("user_roles") \
+                .select("*") \
+                .eq("user_id", user_id) \
+                .execute()
+            
+            roles = result.data or []
+            _set_cached_role_data(cache_key, roles)
+            return roles
+        except Exception as e:
+            print(f"Error fetching user roles: {e}")
+            return []
+    
+    async def get_role_permissions(self, role_id: str) -> List[Dict[str, Any]]:
+        """Retrieve permissions for a specific role.
+        
+        Args:
+            role_id: Role identifier
+            
+        Returns:
+            List of permission dicts with permission strings
+        """
+        if not await self.verify_connection():
+            return []
+        
+        # Check cache first
+        from .auth import _get_cached_role_data, _set_cached_role_data
+        cache_key = f"role_permissions:{role_id}"
+        cached = _get_cached_role_data(cache_key)
+        if cached is not None:
+            return cached
+        
+        try:
+            result = self.supabase.table("role_permissions") \
+                .select("*") \
+                .eq("role_id", role_id) \
+                .execute()
+            
+            permissions = result.data or []
+            _set_cached_role_data(cache_key, permissions)
+            return permissions
+        except Exception as e:
+            print(f"Error fetching role permissions: {e}")
+            return []
+    
+    async def get_role_dataset_access(self, role_id: str) -> List[Dict[str, Any]]:
+        """Retrieve dataset/table access rules for a specific role.
+        
+        Args:
+            role_id: Role identifier
+            
+        Returns:
+            List of access rule dicts with dataset_id, table_id (optional), etc.
+        """
+        if not await self.verify_connection():
+            return []
+        
+        # Check cache first
+        from .auth import _get_cached_role_data, _set_cached_role_data
+        cache_key = f"role_dataset_access:{role_id}"
+        cached = _get_cached_role_data(cache_key)
+        if cached is not None:
+            return cached
+        
+        try:
+            result = self.supabase.table("role_dataset_access") \
+                .select("*") \
+                .eq("role_id", role_id) \
+                .execute()
+            
+            access_rules = result.data or []
+            _set_cached_role_data(cache_key, access_rules)
+            return access_rules
+        except Exception as e:
+            print(f"Error fetching role dataset access: {e}")
+            return []
