@@ -1,6 +1,7 @@
 """Agent module for conversational BigQuery insights."""
 
 from .conversation import InsightsAgent
+from .conversation_manager import ConversationManager, RateLimitExceeded
 from .prompts import PromptBuilder
 from .models import (
     AgentRequest,
@@ -25,6 +26,8 @@ from .summarizer import (
 
 __all__ = [
     "InsightsAgent",
+    "ConversationManager",
+    "RateLimitExceeded",
     "PromptBuilder",
     "AgentRequest",
     "AgentResponse",

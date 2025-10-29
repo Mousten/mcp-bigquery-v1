@@ -103,7 +103,7 @@ class AgentResponse(BaseModel):
             return v
         allowed = {
             "authentication", "authorization", "validation",
-            "execution", "llm", "network", "unknown"
+            "execution", "llm", "network", "rate_limit", "unknown"
         }
         if v.lower() not in allowed:
             raise ValueError(f"Error type must be one of {allowed}, got: {v}")
