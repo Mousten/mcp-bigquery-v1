@@ -28,7 +28,7 @@ All models provide automatic validation, type checking, and serialization.
 
 ## Database Schema
 
-The following Supabase tables are required for RBAC:
+The following Supabase tables are required for RBAC. See `docs/supabase_rbac_schema.sql` for the complete SQL schema with indexes, constraints, and RLS policies.
 
 ### `user_profiles`
 - `user_id` (text, primary key): User ID from Supabase auth
@@ -36,22 +36,33 @@ The following Supabase tables are required for RBAC:
 - `created_at` (timestamp, optional): Profile creation timestamp
 - `updated_at` (timestamp, optional): Last update timestamp
 
+### `app_roles`
+- `role_id` (text, primary key): Unique role identifier
+- `role_name` (text): Role display name
+- `description` (text, optional): Role description
+
 ### `user_roles`
 - `user_id` (text): User ID
-- `role_id` (text): Role identifier
+- `role_id` (text): Role identifier (references app_roles)
 - `role_name` (text): Role display name
 - `assigned_at` (timestamp, optional): Role assignment timestamp
 
 ### `role_permissions`
-- `role_id` (text): Role identifier
+- `role_id` (text): Role identifier (references app_roles)
 - `permission` (text): Permission string (e.g., "query:execute", "cache:read")
 - `description` (text, optional): Permission description
 
 ### `role_dataset_access`
-- `role_id` (text): Role identifier
+- `role_id` (text): Role identifier (references app_roles)
 - `dataset_id` (text): BigQuery dataset identifier (use "*" for wildcard)
 - `table_id` (text, optional): BigQuery table identifier (use "*" for wildcard, null for all tables)
 - `access_level` (text, optional): Access level (default: "read")
+
+**Setup Instructions:**
+1. Run the SQL schema in your Supabase project: `docs/supabase_rbac_schema.sql`
+2. Insert sample roles and permissions (see commented examples in schema file)
+3. Assign roles to users via the `user_roles` table
+4. Configure dataset access via the `role_dataset_access` table
 
 ## Usage
 
