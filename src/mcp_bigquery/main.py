@@ -10,6 +10,7 @@ from .routes.resources import create_resources_router, create_bigquery_router
 from .routes.tools import create_tools_router
 from .routes.events import create_events_router
 from .routes.health import create_health_router
+from .routes.chat import create_chat_router
 
 
 def main():
@@ -70,6 +71,11 @@ def main():
         # Import and create preferences router
         from .routes.preferences import create_preferences_router
         preferences_router = create_preferences_router(knowledge_base)
+        
+        # Create chat router with auth dependency
+        from .api.dependencies import create_auth_dependency
+        auth_dependency = create_auth_dependency(knowledge_base)
+        chat_router = create_chat_router(knowledge_base, auth_dependency)
 
         # Include all routers under the /stream base so MCP tools are available at /stream
         fastapi_app.include_router(resources_router, prefix="/stream")
@@ -78,6 +84,7 @@ def main():
         fastapi_app.include_router(events_router, prefix="/stream")
         fastapi_app.include_router(health_router, prefix="/stream")
         fastapi_app.include_router(preferences_router, prefix="/stream")
+        fastapi_app.include_router(chat_router, prefix="/stream")
 
         # Include a small index at /stream so a GET /stream returns something (helps n8n / browsers)
         from fastapi import APIRouter
@@ -127,6 +134,11 @@ def main():
         # Import and create preferences router
         from .routes.preferences import create_preferences_router
         preferences_router = create_preferences_router(knowledge_base)
+        
+        # Create chat router with auth dependency
+        from .api.dependencies import create_auth_dependency
+        auth_dependency = create_auth_dependency(knowledge_base)
+        chat_router = create_chat_router(knowledge_base, auth_dependency)
 
         # Include all routers
         fastapi_app.include_router(resources_router)
@@ -135,6 +147,7 @@ def main():
         fastapi_app.include_router(events_router)
         fastapi_app.include_router(health_router)
         fastapi_app.include_router(preferences_router)
+        fastapi_app.include_router(chat_router)
 
         print(f"Starting server in HTTP mode on {args.host}:{args.port}...")
         import uvicorn
