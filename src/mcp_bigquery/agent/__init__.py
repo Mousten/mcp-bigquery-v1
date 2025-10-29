@@ -9,6 +9,19 @@ from .models import (
     ChartSuggestion,
     ConversationContext,
 )
+from .mcp_client import (
+    MCPBigQueryClient,
+    QueryResult,
+    DatasetInfo,
+    TableInfo,
+    TableSchema,
+    HealthStatus,
+)
+from .summarizer import (
+    ResultSummarizer,
+    DataSummary,
+    ColumnStatistics,
+)
 
 __all__ = [
     "InsightsAgent",
@@ -18,4 +31,13 @@ __all__ = [
     "SQLGenerationResult",
     "ChartSuggestion",
     "ConversationContext",
+    "MCPBigQueryClient",
+    "QueryResult",
+    "DatasetInfo",
+    "TableInfo",
+    "TableSchema",
+    "HealthStatus",
+    "ResultSummarizer",
+    "DataSummary",
+    "ColumnStatistics",
 ]
