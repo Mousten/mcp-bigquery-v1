@@ -1450,3 +1450,305 @@ class SupabaseKnowledgeBase:
                 "remaining": None,
                 "is_over_quota": False
             }
+    
+    # Chat Persistence Methods
+    
+    async def create_chat_session(
+        self, 
+        user_id: str, 
+        title: str = "New Conversation"
+    ) -> Optional[Dict[str, Any]]:
+        """Create a new chat session for a user.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            title: Optional session title
+            
+        Returns:
+            Created session dict with id, user_id, title, created_at, updated_at
+        """
+        if not await self.verify_connection():
+            return None
+        
+        try:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            
+            session_data = {
+                "user_id": user_id,
+                "title": title,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }
+            
+            result = self.supabase.table("chat_sessions").insert(session_data).execute()
+            
+            if result.data:
+                return result.data[0]
+            return None
+            
+        except Exception as e:
+            print(f"Error creating chat session: {e}")
+            return None
+    
+    async def list_chat_sessions(
+        self, 
+        user_id: str,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """List chat sessions for a user, ordered by most recent first.
+        
+        Args:
+            user_id: User ID from Supabase auth
+            limit: Maximum number of sessions to return
+            offset: Number of sessions to skip
+            
+        Returns:
+            List of session dicts ordered by updated_at descending
+        """
+        if not await self.verify_connection():
+            return []
+        
+        try:
+            result = self.supabase.table("chat_sessions") \
+                .select("*") \
+                .eq("user_id", user_id) \
+                .order("updated_at", desc=True) \
+                .range(offset, offset + limit - 1) \
+                .execute()
+            
+            return result.data if result.data else []
+            
+        except Exception as e:
+            print(f"Error listing chat sessions: {e}")
+            return []
+    
+    async def append_chat_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Append a message to a chat session.
+        
+        Args:
+            session_id: Session UUID
+            role: Message role (user, assistant, system)
+            content: Message content
+            metadata: Optional metadata (model, tokens, etc.)
+            user_id: Optional user ID for ownership validation
+            
+        Returns:
+            Created message dict or None on failure
+        """
+        if not await self.verify_connection():
+            return None
+        
+        # Validate role
+        if role not in ["user", "assistant", "system"]:
+            print(f"Invalid message role: {role}")
+            return None
+        
+        try:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            
+            # Validate session ownership if user_id provided
+            if user_id:
+                session_result = self.supabase.table("chat_sessions") \
+                    .select("user_id") \
+                    .eq("id", session_id) \
+                    .limit(1) \
+                    .execute()
+                
+                if not session_result.data:
+                    print(f"Session not found: {session_id}")
+                    return None
+                
+                if session_result.data[0]["user_id"] != user_id:
+                    print(f"Session ownership validation failed")
+                    return None
+            
+            # Get current message count to determine ordering
+            count_result = self.supabase.table("chat_messages") \
+                .select("ordering", count="exact") \
+                .eq("session_id", session_id) \
+                .order("ordering", desc=True) \
+                .limit(1) \
+                .execute()
+            
+            ordering = 0
+            if count_result.data:
+                ordering = count_result.data[0]["ordering"] + 1
+            
+            message_data = {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "metadata": metadata or {},
+                "created_at": now.isoformat(),
+                "ordering": ordering
+            }
+            
+            result = self.supabase.table("chat_messages").insert(message_data).execute()
+            
+            if result.data:
+                return result.data[0]
+            return None
+            
+        except Exception as e:
+            print(f"Error appending chat message: {e}")
+            return None
+    
+    async def fetch_chat_history(
+        self,
+        session_id: str,
+        user_id: str,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch chat history for a session in chronological order.
+        
+        Args:
+            session_id: Session UUID
+            user_id: User ID for ownership validation
+            limit: Optional maximum number of messages to return
+            
+        Returns:
+            List of message dicts ordered by ordering field
+        """
+        if not await self.verify_connection():
+            return []
+        
+        try:
+            # Validate session ownership
+            session_result = self.supabase.table("chat_sessions") \
+                .select("user_id") \
+                .eq("id", session_id) \
+                .limit(1) \
+                .execute()
+            
+            if not session_result.data:
+                print(f"Session not found: {session_id}")
+                return []
+            
+            if session_result.data[0]["user_id"] != user_id:
+                print(f"Session ownership validation failed")
+                return []
+            
+            # Fetch messages
+            query = self.supabase.table("chat_messages") \
+                .select("*") \
+                .eq("session_id", session_id) \
+                .order("ordering", desc=False)
+            
+            if limit:
+                query = query.limit(limit)
+            
+            result = query.execute()
+            
+            return result.data if result.data else []
+            
+        except Exception as e:
+            print(f"Error fetching chat history: {e}")
+            return []
+    
+    async def rename_session(
+        self,
+        session_id: str,
+        title: str,
+        user_id: str
+    ) -> bool:
+        """Rename a chat session.
+        
+        Args:
+            session_id: Session UUID
+            title: New session title
+            user_id: User ID for ownership validation
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not await self.verify_connection():
+            return False
+        
+        try:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            
+            # Validate session ownership
+            session_result = self.supabase.table("chat_sessions") \
+                .select("user_id") \
+                .eq("id", session_id) \
+                .limit(1) \
+                .execute()
+            
+            if not session_result.data:
+                print(f"Session not found: {session_id}")
+                return False
+            
+            if session_result.data[0]["user_id"] != user_id:
+                print(f"Session ownership validation failed")
+                return False
+            
+            # Update title
+            update_result = self.supabase.table("chat_sessions") \
+                .update({
+                    "title": title,
+                    "updated_at": now.isoformat()
+                }) \
+                .eq("id", session_id) \
+                .execute()
+            
+            return bool(update_result.data)
+            
+        except Exception as e:
+            print(f"Error renaming session: {e}")
+            return False
+    
+    async def delete_chat_session(
+        self,
+        session_id: str,
+        user_id: str
+    ) -> bool:
+        """Delete a chat session and all its messages.
+        
+        Args:
+            session_id: Session UUID
+            user_id: User ID for ownership validation
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not await self.verify_connection():
+            return False
+        
+        try:
+            # Validate session ownership
+            session_result = self.supabase.table("chat_sessions") \
+                .select("user_id") \
+                .eq("id", session_id) \
+                .limit(1) \
+                .execute()
+            
+            if not session_result.data:
+                print(f"Session not found: {session_id}")
+                return False
+            
+            if session_result.data[0]["user_id"] != user_id:
+                print(f"Session ownership validation failed")
+                return False
+            
+            # Delete session (messages will cascade delete)
+            delete_result = self.supabase.table("chat_sessions") \
+                .delete() \
+                .eq("id", session_id) \
+                .execute()
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error deleting session: {e}")
+            return False
