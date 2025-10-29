@@ -747,16 +747,17 @@ class TestBackwardCompatibility:
     
     @pytest.mark.asyncio
     async def test_existing_methods_still_work(self, supabase_kb, mock_supabase):
-        """Test that existing cache methods still work."""
+        """Test that existing cache methods still work with user_id."""
         mock_response = MagicMock()
         mock_response.data = []
         mock_supabase.execute = MagicMock(return_value=mock_response)
         supabase_kb.supabase = mock_supabase
         
-        # Test existing method
+        # Test existing method with user_id (required for cache isolation)
         result = await supabase_kb.get_cached_query(
             sql="SELECT * FROM test",
-            use_cache=True
+            use_cache=True,
+            user_id="user-123"
         )
         
         assert result is None  # Cache miss

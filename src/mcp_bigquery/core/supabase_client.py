@@ -64,8 +64,17 @@ class SupabaseKnowledgeBase:
         use_cache: bool = True,
         user_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """Retrieve cached query result if available and not expired."""
+        """Retrieve cached query result if available and not expired.
+        
+        Cache isolation: Always filters by user_id to ensure cached content
+        is never shared across users with different permissions.
+        """
         if not use_cache or not await self.verify_connection():
+            return None
+        
+        # Require user_id for cache isolation
+        if not user_id:
+            print("Warning: cache access requires user_id for isolation")
             return None
             
         query_hash = self._generate_query_hash(sql)
@@ -73,13 +82,11 @@ class SupabaseKnowledgeBase:
         try:
             query = self.supabase.table("query_cache").select("*").eq(
                 "query_hash", query_hash
+            ).eq(
+                "user_id", user_id
             ).gte(
                 "expires_at", datetime.now().isoformat()
             ).order("created_at", desc=True).limit(1)
-            
-            # Add user filter if using user-based RLS
-            if user_id and not self._use_service_key:
-                query = query.eq("user_id", user_id)
             
             result = query.execute()
             
@@ -124,8 +131,17 @@ class SupabaseKnowledgeBase:
         use_cache: bool = True,
         user_id: Optional[str] = None
     ) -> bool:
-        """Cache query result with metadata and table dependencies."""
+        """Cache query result with metadata and table dependencies.
+        
+        Cache isolation: Always requires user_id to ensure cached content
+        is segregated per user/role.
+        """
         if not use_cache or not await self.verify_connection():
+            return False
+        
+        # Require user_id for cache isolation
+        if not user_id:
+            print("Warning: cache write requires user_id for isolation")
             return False
             
         # Don't cache empty results or very large results
@@ -153,12 +169,9 @@ class SupabaseKnowledgeBase:
                 "result_data": result_data_serialized,
                 "metadata": metadata_serialized,
                 "expires_at": expires_at.isoformat(),
-                "hit_count": 0
+                "hit_count": 0,
+                "user_id": user_id
             }
-            
-            # Add user_id if provided
-            if user_id:
-                cache_data["user_id"] = user_id
             
             # Insert cache entry
             cache_result = self.supabase.table("query_cache").insert(cache_data).execute()
