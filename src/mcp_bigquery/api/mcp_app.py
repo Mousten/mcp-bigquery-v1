@@ -447,28 +447,29 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
 
     @mcp_app.tool(
         name="analyze_query_performance",
-        description="Analyze historical query performance patterns and provide optimization recommendations with cost insights."
+        description="Analyze historical query performance patterns and provide optimization recommendations with cost insights. Requires authentication token."
     )
     async def analyze_query_performance(
+        auth_token: str,
         sql: Optional[str] = None,
         tables_accessed: Optional[List[str]] = None,
         time_range_hours: int = 168,
-        user_id: Optional[str] = None,
         include_recommendations: bool = True
     ) -> dict:
-        effective_user_id = user_id or getattr(config, 'DEFAULT_USER_ID', None)
-        
-        supabase_available = await ensure_supabase_connection()
-        if not (supabase_available and knowledge_base is not None):
-            return {"error": "Supabase knowledge base unavailable"}
-
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            supabase_available = await ensure_supabase_connection()
+            if not (supabase_available and knowledge_base is not None):
+                return {"error": "Supabase knowledge base unavailable"}
+
             result = await analyze_query_performance_handler(
                 knowledge_base=knowledge_base,
+                user_context=user_context,
                 sql=sql,
                 tables_accessed=tables_accessed,
-                time_range_hours=time_range_hours,
-                user_id=effective_user_id
+                time_range_hours=time_range_hours
             )
             if isinstance(result, tuple):
                 result, _ = result
@@ -481,39 +482,39 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "time_range_hours": time_range_hours,
                     "include_recommendations": include_recommendations,
                 },
-                effective_user_id
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error analyzing query performance: {e}")
-            await log_supabase_event(
-                "performance_analysis_failed",
-                {"error": str(e)},
-                effective_user_id
-            )
             raise
 
     @mcp_app.tool(
         name="get_schema_changes",
-        description="Track schema evolution and changes over time for specific tables with impact analysis."
+        description="Track schema evolution and changes over time for specific tables with impact analysis. Requires authentication token."
     )
     async def get_schema_changes(
+        auth_token: str,
         project_id: str,
         dataset_id: str,
         table_id: str,
         limit: int = 10,
-        include_impact_analysis: bool = True,
-        user_id: Optional[str] = None
+        include_impact_analysis: bool = True
     ) -> dict:
-        effective_user_id = user_id or getattr(config, 'DEFAULT_USER_ID', None)
-        
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
             assert knowledge_base is not None
             result = await get_schema_changes_handler(
                 knowledge_base=knowledge_base,
                 project_id=project_id,
                 dataset_id=dataset_id,
                 table_id=table_id,
+                user_context=user_context,
                 limit=limit
             )
             if isinstance(result, tuple):
@@ -528,39 +529,39 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "limit": limit,
                     "include_impact_analysis": include_impact_analysis,
                 },
-                effective_user_id
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error getting schema changes: {e}")
-            await log_supabase_event(
-                "schema_changes_failed",
-                {"project_id": project_id, "dataset_id": dataset_id, "table_id": table_id, "error": str(e)},
-                effective_user_id
-            )
             raise
 
     @mcp_app.tool(
         name="manage_cache",
-        description="Comprehensive cache management operations including statistics, cleanup, and targeted invalidation."
+        description="Comprehensive cache management operations including statistics, cleanup, and targeted invalidation. Requires authentication token."
     )
     async def manage_cache(
+        auth_token: str,
         action: str,
         target: Optional[str] = None,
         project_id: Optional[str] = None,
         dataset_id: Optional[str] = None,
-        table_id: Optional[str] = None,
-        user_id: Optional[str] = None
+        table_id: Optional[str] = None
     ) -> dict:
-        effective_user_id = user_id or getattr(config, 'DEFAULT_USER_ID', None)
-
-        supabase_available = await ensure_supabase_connection()
-        if not (supabase_available and knowledge_base is not None):
-            return {"error": "Supabase knowledge base unavailable"}
-
         try:
+            # Authenticate user
+            user_context = await get_user_context_from_token(auth_token)
+            
+            supabase_available = await ensure_supabase_connection()
+            if not (supabase_available and knowledge_base is not None):
+                return {"error": "Supabase knowledge base unavailable"}
+
             result = await cache_management_handler(
                 knowledge_base=knowledge_base,
+                user_context=user_context,
                 action=action,
                 target=target,
                 project_id=project_id,
@@ -579,16 +580,14 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
                     "dataset_id": dataset_id,
                     "table_id": table_id,
                 },
-                effective_user_id
+                user_context.user_id
             )
             return result
+        except ValueError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error managing cache: {e}")
-            await log_supabase_event(
-                "cache_management_failed",
-                {"action": action, "error": str(e)},
-                effective_user_id
-            )
             raise
 
     @mcp_app.tool(

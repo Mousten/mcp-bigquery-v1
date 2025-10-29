@@ -11,30 +11,52 @@ from ..core.supabase_client import SupabaseKnowledgeBase
 from ..core.auth import UserContext, AuthorizationError, extract_dataset_table_from_path, normalize_identifier
 
 
-def extract_table_references(sql: str) -> List[str]:
-    """Extract table references from SQL query."""
-    pattern = r'FROM\s+`?([a-zA-Z0-9_.-]+)`?|JOIN\s+`?([a-zA-Z0-9_.-]+)`?'
+def extract_table_references(sql: str, default_project: Optional[str] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
+    """Extract table references from SQL query as structured tuples.
+    
+    Args:
+        sql: SQL query to parse
+        default_project: Default project ID to use for unqualified references
+        
+    Returns:
+        List of (project_id, dataset_id, table_id) tuples
+    """
+    pattern = r'(?:FROM|JOIN)\s+`?([a-zA-Z0-9_.-]+)`?'
     matches = re.findall(pattern, sql, re.IGNORECASE)
-    tables = []
-    for match in matches:
-        table = match[0] or match[1]
-        if table:
-            tables.append(table)
-    return tables
+    references = []
+    
+    for table_ref in matches:
+        parts = table_ref.split('.')
+        
+        if len(parts) == 3:
+            # project.dataset.table
+            references.append((parts[0], parts[1], parts[2]))
+        elif len(parts) == 2:
+            # dataset.table (use default project if provided)
+            references.append((default_project, parts[0], parts[1]))
+        elif len(parts) == 1:
+            # Just table name - can't determine dataset/project
+            references.append((None, None, parts[0]))
+        else:
+            references.append((None, None, None))
+    
+    return references
 
 
-def check_table_access(user_context: UserContext, table_references: List[str]) -> None:
+def check_table_access(user_context: UserContext, table_references: List[Tuple[Optional[str], Optional[str], Optional[str]]]) -> None:
     """Check if user has access to all tables referenced in query.
     
     Args:
         user_context: User context with permissions
-        table_references: List of table references from SQL
+        table_references: List of (project, dataset, table) tuples from SQL
         
     Raises:
         AuthorizationError: If user lacks access to any referenced table
     """
-    for table_ref in table_references:
-        dataset_id, table_id = extract_dataset_table_from_path(table_ref)
+    for project_id, dataset_id, table_id in table_references:
+        # Skip if we couldn't parse the reference
+        if not dataset_id and not table_id:
+            continue
         
         # Check access based on what we extracted
         if dataset_id and table_id:
@@ -49,7 +71,6 @@ def check_table_access(user_context: UserContext, table_references: List[str]) -
                 raise AuthorizationError(
                     f"Access denied to dataset {dataset_id}"
                 )
-        # If we can't parse the reference properly, we'll let BigQuery handle it
 
 
 async def query_tool_handler(
@@ -106,7 +127,7 @@ async def query_tool_handler(
         # Check cache first if enabled and knowledge_base is provided
         cached_result = None
         if use_cache and knowledge_base is not None:
-            cached_result = await knowledge_base.get_cached_query(sql)
+            cached_result = await knowledge_base.get_cached_query(sql, user_id=user_id)
             if cached_result:
                 await event_manager.broadcast(
                     "queries",
@@ -183,7 +204,7 @@ async def query_tool_handler(
             # Cache the result if caching is enabled and knowledge_base is provided
             if use_cache and knowledge_base is not None and len(rows) > 0:
                 await knowledge_base.cache_query_result(
-                    sql, rows, statistics, tables_accessed
+                    sql, rows, statistics, tables_accessed, user_id=user_id
                 )
 
             # Save query pattern for analysis
@@ -559,10 +580,10 @@ async def explain_table_handler(
 
 async def analyze_query_performance_handler(
     knowledge_base: SupabaseKnowledgeBase,
+    user_context: UserContext,
     sql: Optional[str] = None,
     tables_accessed: Optional[List[str]] = None,
     time_range_hours: int = 168,  # Last week by default
-    user_id: Optional[str] = None
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
     """Historical performance analysis for optimization."""
     try:
@@ -588,8 +609,8 @@ async def analyze_query_performance_handler(
                 # Filter by tables accessed (simplified)
                 similar_queries = similar_queries.overlaps("tables_accessed", tables_accessed)
             
-            if user_id:
-                similar_queries = similar_queries.eq("user_id", user_id)
+            # Always filter by user_id for data isolation
+            similar_queries = similar_queries.eq("user_id", user_context.user_id)
             
             similar_queries = similar_queries.execute()
         
@@ -686,10 +707,17 @@ async def get_schema_changes_handler(
     project_id: str,
     dataset_id: str,
     table_id: str,
+    user_context: UserContext,
     limit: int = 10
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
     """Track schema evolution over time."""
     try:
+        # Check table access
+        normalized_dataset = normalize_identifier(dataset_id)
+        normalized_table = normalize_identifier(table_id)
+        if not user_context.can_access_table(normalized_dataset, normalized_table):
+            return {"error": f"Access denied to table {dataset_id}.{table_id}"}, 403
+        
         # Get schema snapshots from knowledge base
         schema_result = knowledge_base.supabase.table("schema_snapshots").select(
             "*"
@@ -809,23 +837,29 @@ async def get_schema_changes_handler(
 
 async def cache_management_handler(
     knowledge_base: SupabaseKnowledgeBase,
+    user_context: UserContext,
     action: str,
     target: Optional[str] = None,
     project_id: Optional[str] = None,
     dataset_id: Optional[str] = None,
     table_id: Optional[str] = None
 ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], int]]:
-    """Manual cache control (clear, refresh, etc.)."""
+    """Manual cache control (clear, refresh, etc.).
+    
+    Cache operations are isolated per user to ensure users can only
+    manage their own cached content.
+    """
     try:
         result: dict[str, Any] = {"action": action, "timestamp": datetime.now().isoformat()}
+        user_id = user_context.user_id
         
         if action == "clear_all":
-            # Clear all cache entries by setting expiration to now
+            # Clear all cache entries for the current user only
             clear_result = knowledge_base.supabase.table("query_cache").update({
                 "expires_at": datetime.now().isoformat()
-            }).neq("id", "00000000-0000-0000-0000-000000000000").execute()  # Update all
+            }).eq("user_id", user_id).execute()
             
-            result["message"] = "All cache entries cleared"
+            result["message"] = "All your cache entries cleared"
             result["affected_entries"] = len(clear_result.data) if clear_result.data else 0
             
         elif action == "clear_table" and project_id and dataset_id and table_id:
@@ -835,34 +869,34 @@ async def cache_management_handler(
             result["table"] = f"{project_id}.{dataset_id}.{table_id}"
             
         elif action == "clear_expired":
-            # Remove expired cache entries
-            delete_result = knowledge_base.supabase.table("query_cache").delete().lt(
-                "expires_at", datetime.now().isoformat()
-            ).execute()
+            # Remove expired cache entries for the current user only
+            delete_result = knowledge_base.supabase.table("query_cache").delete().eq(
+                "user_id", user_id
+            ).lt("expires_at", datetime.now().isoformat()).execute()
             
-            result["message"] = "Expired cache entries removed"
+            result["message"] = "Your expired cache entries removed"
             result["removed_entries"] = len(delete_result.data) if delete_result.data else 0
             
         elif action == "cache_stats":
-            # Get cache statistics
+            # Get cache statistics for the current user only
             total_result = knowledge_base.supabase.table("query_cache").select(
                 "id", count="exact", head=True
-            ).execute()
+            ).eq("user_id", user_id).execute()
             active_result = knowledge_base.supabase.table("query_cache").select(
                 "id", count="exact", head=True
-            ).gte("expires_at", datetime.now().isoformat()).execute()
+            ).eq("user_id", user_id).gte("expires_at", datetime.now().isoformat()).execute()
             expired_result = knowledge_base.supabase.table("query_cache").select(
                 "id", count="exact", head=True  
-            ).lt("expires_at", datetime.now().isoformat()).execute()
+            ).eq("user_id", user_id).lt("expires_at", datetime.now().isoformat()).execute()
 
-            # Get hit statistics
+            # Get hit statistics for the current user
             hits_result = knowledge_base.supabase.table("query_cache").select(
                 "hit_count"
-            ).gte("expires_at", datetime.now().isoformat()).execute()
+            ).eq("user_id", user_id).gte("expires_at", datetime.now().isoformat()).execute()
 
             hit_counts = [entry["hit_count"] for entry in hits_result.data] if hits_result.data else []
 
-            result["message"] = "Cache statistics retrieved"
+            result["message"] = "Your cache statistics retrieved"
             result["statistics"] = {
                 "total_entries": total_result.count if total_result else 0,
                 "active_entries": active_result.count if active_result else 0,
@@ -873,10 +907,10 @@ async def cache_management_handler(
             }
             
         elif action == "cache_top_queries":
-            # Get most frequently accessed cached queries
+            # Get most frequently accessed cached queries for the current user
             top_queries_result = knowledge_base.supabase.table("query_cache").select(
                 "sql_query", "hit_count", "created_at", "expires_at"
-            ).gte("expires_at", datetime.now().isoformat()).order(
+            ).eq("user_id", user_id).gte("expires_at", datetime.now().isoformat()).order(
                 "hit_count", desc=True
             ).limit(10).execute()
             
