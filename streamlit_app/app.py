@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -219,10 +220,6 @@ def get_user_context(user_id: str, access_token: str, config: StreamlitConfig) -
     except Exception as e:
         logger.error(f"Failed to get user context: {e}", exc_info=True)
         return None
-
-
-# Import for type hints
-from typing import Any
 
 
 if __name__ == "__main__":
