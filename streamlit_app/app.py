@@ -4,12 +4,19 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from streamlit_app.config import StreamlitConfig
-from streamlit_app.auth import AuthManager, render_login_ui, check_auth_status, sign_out
+from streamlit_app.auth import (
+    AuthManager, 
+    render_login_ui, 
+    check_auth_status, 
+    sign_out,
+    handle_magic_link_callback
+)
 from streamlit_app.session_manager import SessionManager, init_session_state
 from streamlit_app.chat_ui import render_chat_interface
 
@@ -52,6 +59,11 @@ def main():
     
     # Initialize auth manager
     auth_manager = AuthManager(config.supabase_url, config.supabase_key)
+    
+    # Handle magic link callback if present (must be before auth check)
+    if handle_magic_link_callback(auth_manager):
+        # Callback was handled, function will handle rerun
+        return
     
     # Check authentication status
     if not check_auth_status(auth_manager):
@@ -219,10 +231,6 @@ def get_user_context(user_id: str, access_token: str, config: StreamlitConfig) -
     except Exception as e:
         logger.error(f"Failed to get user context: {e}", exc_info=True)
         return None
-
-
-# Import for type hints
-from typing import Any
 
 
 if __name__ == "__main__":

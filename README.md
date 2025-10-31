@@ -88,6 +88,7 @@ GOOGLE_API_KEY=...                       # Required if using Gemini
 # Streamlit App Configuration (Optional)
 # ========================================
 MCP_BASE_URL=http://localhost:8000       # MCP server base URL
+STREAMLIT_APP_URL=http://localhost:8501  # Streamlit app URL for magic link redirects
 ENABLE_RATE_LIMITING=true                # Enable rate limiting
 ENABLE_CACHING=true                      # Enable response caching
 MAX_CONTEXT_TURNS=5                      # Max conversation turns in context
@@ -201,7 +202,7 @@ The UI will open at `http://localhost:8501`.
 
 ### Streamlit UI (Recommended for Business Users)
 
-1. **Sign In**: Use email/password or magic link
+1. **Sign In**: Use email/password or magic link authentication
 2. **Start Chatting**: Ask questions in natural language
 3. **View Results**: See tables, charts, and insights
 4. **Manage Sessions**: Create, rename, and organize conversations
@@ -212,7 +213,11 @@ Example questions:
 - "Which customers have the highest lifetime value?"
 - "Compare revenue across different regions"
 
-See [docs/streamlit.md](docs/streamlit.md) for detailed UI documentation.
+**Authentication**:
+- **Email/Password**: Traditional sign-in method
+- **Magic Link**: Passwordless authentication via email link
+
+See [docs/streamlit.md](docs/streamlit.md) for detailed UI documentation and [streamlit_app/MAGIC_LINK_SETUP.md](streamlit_app/MAGIC_LINK_SETUP.md) for magic link authentication setup.
 
 ### REST API
 
