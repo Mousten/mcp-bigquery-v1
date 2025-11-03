@@ -60,16 +60,33 @@ def main():
     # Initialize auth manager
     auth_manager = AuthManager(config.supabase_url, config.supabase_key)
     
+    # Debug logging for initial page load
+    logger.info("=" * 80)
+    logger.info("🚀 Page Load")
+    logger.info(f"🔑 Query params present: {list(st.query_params.keys())}")
+    logger.info(f"🔐 Authenticated: {st.session_state.get('authenticated', False)}")
+    logger.info("=" * 80)
+    
     # Handle magic link callback if present (must be before auth check)
-    if handle_magic_link_callback(auth_manager):
+    callback_handled = handle_magic_link_callback(auth_manager)
+    logger.info(f"🔗 Magic link callback handled: {callback_handled}")
+    
+    if callback_handled:
         # Callback was handled, function will handle rerun
+        logger.info("🔗 Callback processing complete, rerunning...")
         return
     
     # Check authentication status
-    if not check_auth_status(auth_manager):
+    auth_status = check_auth_status(auth_manager)
+    logger.info(f"🔐 Auth status: {auth_status}")
+    
+    if not auth_status:
         # Show login UI
+        logger.info("🔐 User not authenticated, showing login UI")
         render_login_ui(auth_manager)
         return
+    
+    logger.info(f"✅ User authenticated, rendering main app for: {st.session_state.get('user', {}).get('email', 'Unknown')}")
     
     # User is authenticated - show main app
     render_main_app(config, auth_manager)
