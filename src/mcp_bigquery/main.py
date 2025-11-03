@@ -121,6 +121,13 @@ def main():
             fastapi_app.include_router(stream_router)
 
         print(f"Starting server in HTTP-STREAM mode on {args.host}:{args.port}...")
+        print(f"📡 BigQuery tool endpoints available at:")
+        print(f"   - GET  {args.host}:{args.port}/stream/tools/datasets")
+        print(f"   - POST {args.host}:{args.port}/stream/tools/execute_bigquery_sql")
+        print(f"   - GET  {args.host}:{args.port}/stream/tools/tables")
+        print(f"   - GET  {args.host}:{args.port}/stream/tools/table_schema")
+        print(f"📚 API documentation at: http://{args.host}:{args.port}/docs")
+        print(f"⚠️  Note: All tool endpoints have /stream prefix in this mode")
         import uvicorn
         uvicorn.run(fastapi_app, host=args.host, port=args.port)
 
@@ -161,6 +168,12 @@ def main():
         fastapi_app.include_router(chat_router)
 
         print(f"Starting server in HTTP mode on {args.host}:{args.port}...")
+        print(f"📡 BigQuery tool endpoints available at:")
+        print(f"   - GET  {args.host}:{args.port}/tools/datasets")
+        print(f"   - POST {args.host}:{args.port}/tools/execute_bigquery_sql")
+        print(f"   - GET  {args.host}:{args.port}/tools/tables")
+        print(f"   - GET  {args.host}:{args.port}/tools/table_schema")
+        print(f"📚 API documentation at: http://{args.host}:{args.port}/docs")
         import uvicorn
         uvicorn.run(fastapi_app, host=args.host, port=args.port)
 

@@ -330,12 +330,43 @@ GET    /tools/tables
 
 ### Issue: Routes return 404
 
-**Possible causes:**
-1. Server not running in correct mode
-2. Incorrect URL (check for `/stream` prefix in http-stream mode)
-3. Router not included in FastAPI app
+**⚠️ MOST COMMON ISSUE: Transport Mode Mismatch**
 
-**Solution:** Verify server is running and check which transport mode is active.
+The server supports two HTTP modes with different route prefixes:
+
+| Mode | Routes At | Start Command |
+|------|-----------|---------------|
+| **HTTP** | `/tools/*` | `--transport http` |
+| **HTTP-Stream** | `/stream/tools/*` | `--transport http-stream` |
+
+**If you get 404 errors, the server is likely in HTTP-Stream mode while your client expects HTTP mode (or vice versa).**
+
+**Quick Diagnosis:**
+```bash
+# Run the diagnostic script
+python diagnose_server.py --token YOUR_JWT_TOKEN
+```
+
+**Solutions:**
+
+1. **Use HTTP mode (recommended):**
+   ```bash
+   uv run mcp-bigquery --transport http --port 8000
+   ```
+   Client uses: `http://localhost:8000/tools/datasets`
+
+2. **Use HTTP-Stream mode:**
+   ```bash
+   uv run mcp-bigquery --transport http-stream --port 8000
+   ```
+   Client uses: `http://localhost:8000/stream/tools/datasets`
+
+**Other possible causes:**
+- Server not running
+- Wrong host/port in client configuration
+- Firewall blocking connections
+
+See [ENDPOINT_404_FIX.md](./ENDPOINT_404_FIX.md) for detailed troubleshooting.
 
 ### Issue: Routes return 401
 
