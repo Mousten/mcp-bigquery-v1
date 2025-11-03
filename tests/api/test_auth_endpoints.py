@@ -25,6 +25,7 @@ def valid_token(jwt_secret):
     payload = {
         "sub": "user-123",
         "email": "test@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         "iat": datetime.now(timezone.utc),
     }
@@ -37,6 +38,7 @@ def expired_token(jwt_secret):
     payload = {
         "sub": "user-123",
         "email": "test@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) - timedelta(hours=1),
         "iat": datetime.now(timezone.utc) - timedelta(hours=2),
     }

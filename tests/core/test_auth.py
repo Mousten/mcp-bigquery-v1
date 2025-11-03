@@ -28,6 +28,7 @@ def valid_token(jwt_secret):
     payload = {
         "sub": "user-123",
         "email": "test@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         "iat": datetime.now(timezone.utc),
     }
@@ -40,6 +41,7 @@ def expired_token(jwt_secret):
     payload = {
         "sub": "user-123",
         "email": "test@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) - timedelta(hours=1),
         "iat": datetime.now(timezone.utc) - timedelta(hours=2),
     }
@@ -146,6 +148,7 @@ class TestVerifyToken:
         payload = {
             "sub": "user-123",
             "email": "test@example.com",
+            "aud": "authenticated",
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             "iat": datetime.now(timezone.utc) + timedelta(seconds=5),  # 5 seconds in future
         }
@@ -309,6 +312,7 @@ class TestUserContextAsync:
         payload = {
             "sub": "user-456",
             "email": "skewtest@example.com",
+            "aud": "authenticated",
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             "iat": datetime.now(timezone.utc) + timedelta(seconds=8),  # 8 seconds in future
         }
