@@ -64,7 +64,7 @@ def main():
         # Create and include routers (same as regular HTTP)
         resources_router = create_resources_router(bigquery_client, config, knowledge_base)
         bigquery_router = create_bigquery_router(bigquery_client, config, knowledge_base)
-        tools_router = create_tools_router(bigquery_client, event_manager, knowledge_base)
+        tools_router = create_tools_router(bigquery_client, event_manager, knowledge_base, config)
         events_router = create_events_router(event_manager)
         health_router = create_health_router(event_manager)
         
@@ -74,7 +74,7 @@ def main():
         
         # Create chat router with auth dependency
         from .api.dependencies import create_auth_dependency
-        auth_dependency = create_auth_dependency(knowledge_base)
+        auth_dependency = create_auth_dependency(knowledge_base, config.supabase_jwt_secret)
         chat_router = create_chat_router(knowledge_base, auth_dependency)
 
         # Include all routers under the /stream base so MCP tools are available at /stream
@@ -127,7 +127,7 @@ def main():
         # Create and include routers
         resources_router = create_resources_router(bigquery_client, config, knowledge_base)
         bigquery_router = create_bigquery_router(bigquery_client, config, knowledge_base)
-        tools_router = create_tools_router(bigquery_client, event_manager, knowledge_base)
+        tools_router = create_tools_router(bigquery_client, event_manager, knowledge_base, config)
         events_router = create_events_router(event_manager)
         health_router = create_health_router(event_manager)
         
@@ -137,7 +137,7 @@ def main():
         
         # Create chat router with auth dependency
         from .api.dependencies import create_auth_dependency
-        auth_dependency = create_auth_dependency(knowledge_base)
+        auth_dependency = create_auth_dependency(knowledge_base, config.supabase_jwt_secret)
         chat_router = create_chat_router(knowledge_base, auth_dependency)
 
         # Include all routers

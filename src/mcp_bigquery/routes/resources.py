@@ -11,7 +11,7 @@ def create_resources_router(bigquery_client, config, knowledge_base=None) -> API
     router = APIRouter(prefix="/resources", tags=["resources"])
     
     # Create auth dependency with knowledge base for role loading
-    get_current_user = create_auth_dependency(knowledge_base)
+    get_current_user = create_auth_dependency(knowledge_base, config.supabase_jwt_secret)
 
     @router.get("/list")
     async def list_resources_fastapi(current_user: UserContext = Depends(get_current_user)):
@@ -29,7 +29,7 @@ def create_bigquery_router(bigquery_client, config, knowledge_base=None) -> APIR
     router = APIRouter(prefix="/bigquery", tags=["bigquery"])
     
     # Create auth dependency with knowledge base for role loading
-    get_current_user = create_auth_dependency(knowledge_base)
+    get_current_user = create_auth_dependency(knowledge_base, config.supabase_jwt_secret)
 
     @router.get("/{project_id}/{dataset_id}/{table_id}")
     async def read_resource_fastapi(

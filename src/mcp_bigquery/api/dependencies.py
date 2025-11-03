@@ -13,7 +13,8 @@ security = HTTPBearer(auto_error=False)
 async def get_user_context(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     authorization: Optional[str] = Header(None),
-    supabase_kb: Optional[SupabaseKnowledgeBase] = None
+    supabase_kb: Optional[SupabaseKnowledgeBase] = None,
+    jwt_secret: Optional[str] = None
 ) -> UserContext:
     """Extract and validate user context from Authorization header.
     
@@ -21,6 +22,7 @@ async def get_user_context(
         credentials: Bearer token credentials from HTTPBearer
         authorization: Alternative authorization header
         supabase_kb: SupabaseKnowledgeBase instance for loading roles/permissions
+        jwt_secret: JWT secret for token validation
         
     Returns:
         UserContext with user information and permissions
@@ -50,6 +52,7 @@ async def get_user_context(
         # Create UserContext from token
         context = await UserContext.from_token_async(
             token=token,
+            jwt_secret=jwt_secret,
             supabase_kb=supabase_kb
         )
         
@@ -76,11 +79,15 @@ async def get_user_context(
         )
 
 
-def create_auth_dependency(supabase_kb: Optional[SupabaseKnowledgeBase] = None):
+def create_auth_dependency(
+    supabase_kb: Optional[SupabaseKnowledgeBase] = None,
+    jwt_secret: Optional[str] = None
+):
     """Factory function to create auth dependency with injected SupabaseKnowledgeBase.
     
     Args:
         supabase_kb: SupabaseKnowledgeBase instance for loading roles/permissions
+        jwt_secret: JWT secret for token validation
         
     Returns:
         Dependency function that extracts UserContext
@@ -89,12 +96,15 @@ def create_auth_dependency(supabase_kb: Optional[SupabaseKnowledgeBase] = None):
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
         authorization: Optional[str] = Header(None)
     ) -> UserContext:
-        return await get_user_context(credentials, authorization, supabase_kb)
+        return await get_user_context(credentials, authorization, supabase_kb, jwt_secret)
     
     return auth_dependency
 
 
-def create_optional_auth_dependency(supabase_kb: Optional[SupabaseKnowledgeBase] = None):
+def create_optional_auth_dependency(
+    supabase_kb: Optional[SupabaseKnowledgeBase] = None,
+    jwt_secret: Optional[str] = None
+):
     """Factory function to create optional auth dependency.
     
     Returns None if no authentication is provided, otherwise returns UserContext.
@@ -102,6 +112,7 @@ def create_optional_auth_dependency(supabase_kb: Optional[SupabaseKnowledgeBase]
     
     Args:
         supabase_kb: SupabaseKnowledgeBase instance for loading roles/permissions
+        jwt_secret: JWT secret for token validation
         
     Returns:
         Dependency function that extracts optional UserContext
@@ -126,6 +137,7 @@ def create_optional_auth_dependency(supabase_kb: Optional[SupabaseKnowledgeBase]
         try:
             context = await UserContext.from_token_async(
                 token=token,
+                jwt_secret=jwt_secret,
                 supabase_kb=supabase_kb
             )
             
