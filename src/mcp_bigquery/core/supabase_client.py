@@ -20,12 +20,13 @@ class SupabaseKnowledgeBase:
         
         # Determine which key to use and track it
         service_key = os.getenv("SUPABASE_SERVICE_KEY")
-        anon_key = os.getenv("SUPABASE_ANON_KEY")
+        anon_key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_KEY")
         
         # Try to use service role key first, then anon key
         if supabase_key:
             self.supabase_key = supabase_key
-            self._use_service_key = False  # Unknown if provided key is service key
+            # Check if the provided key is the service key
+            self._use_service_key = (service_key and supabase_key == service_key)
         elif service_key:
             self.supabase_key = service_key
             self._use_service_key = True
@@ -34,6 +35,7 @@ class SupabaseKnowledgeBase:
             self._use_service_key = False
         else:
             self.supabase_key = None
+            self._use_service_key = False
         
         if not self.supabase_url or not self.supabase_key:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY (or SUPABASE_ANON_KEY) must be provided or set in environment variables.")
