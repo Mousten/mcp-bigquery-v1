@@ -198,6 +198,7 @@ class UserContext(BaseModel):
                 token,
                 secret,
                 algorithms=["HS256"],
+                audience="authenticated",
                 options={"verify_exp": True},
                 leeway=10
             )
@@ -272,6 +273,7 @@ class UserContext(BaseModel):
                 token,
                 secret,
                 algorithms=["HS256"],
+                audience="authenticated",
                 options={"verify_exp": True},
                 leeway=10
             )
@@ -446,6 +448,7 @@ def verify_token(token: str, jwt_secret: Optional[str] = None) -> Dict[str, Any]
             token,
             secret,
             algorithms=["HS256"],
+            audience="authenticated",
             options={"verify_exp": True},
             leeway=10
         )

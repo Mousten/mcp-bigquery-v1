@@ -24,6 +24,7 @@ def valid_token(jwt_secret):
     payload = {
         "sub": "user-123",
         "email": "test@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }
     return jwt.encode(payload, jwt_secret, algorithm="HS256")
@@ -35,6 +36,7 @@ def expired_token(jwt_secret):
     payload = {
         "sub": "user-123",
         "email": "test@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) - timedelta(hours=1),
     }
     return jwt.encode(payload, jwt_secret, algorithm="HS256")
@@ -530,12 +532,14 @@ def test_multiple_users_isolation(client, mock_knowledge_base, jwt_secret):
     token1 = jwt.encode({
         "sub": "user-123",
         "email": "user1@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }, jwt_secret, algorithm="HS256")
     
     token2 = jwt.encode({
         "sub": "user-456",
         "email": "user2@example.com",
+        "aud": "authenticated",
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
     }, jwt_secret, algorithm="HS256")
     
