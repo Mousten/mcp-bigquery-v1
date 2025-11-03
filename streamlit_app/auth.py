@@ -55,6 +55,47 @@ class AuthManager:
             logger.error(f"Sign in error: {e}")
             raise
     
+    def sign_up(self, email: str, password: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Sign up a new user with email and password.
+        
+        Args:
+            email: User email
+            password: User password
+            metadata: Optional user metadata (e.g., display_name, full_name)
+            
+        Returns:
+            Response data with user and session info if successful, None otherwise
+        """
+        try:
+            sign_up_data = {
+                "email": email,
+                "password": password
+            }
+            
+            if metadata:
+                sign_up_data["options"] = {"data": metadata}
+            
+            response = self.supabase.auth.sign_up(sign_up_data)
+            
+            if response:
+                result = {
+                    "user": response.user.model_dump() if response.user else None,
+                    "session": response.session.model_dump() if response.session else None,
+                }
+                
+                if response.session:
+                    result.update({
+                        "access_token": response.session.access_token,
+                        "refresh_token": response.session.refresh_token,
+                        "expires_at": response.session.expires_at
+                    })
+                
+                return result
+            return None
+        except Exception as e:
+            logger.error(f"Sign up error: {e}")
+            raise
+
     def sign_in_with_otp(self, email: str, redirect_to: Optional[str] = None) -> bool:
         """Send magic link to email.
         
@@ -428,15 +469,96 @@ def handle_magic_link_callback(auth_manager: AuthManager) -> bool:
         return True
 
 
+
+
+def validate_email(email: str) -> tuple[bool, Optional[str]]:
+    """Validate email format.
+    
+    Args:
+        email: Email address to validate
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    import re
+    
+    if not email:
+        return False, "Email is required"
+    
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not re.match(email_pattern, email):
+        return False, "Invalid email format"
+    
+    return True, None
+
+
+def validate_password(password: str) -> tuple[bool, list[str]]:
+    """Validate password strength.
+    
+    Args:
+        password: Password to validate
+        
+    Returns:
+        Tuple of (is_valid, list_of_errors)
+    """
+    errors = []
+    
+    if len(password) < 8:
+        errors.append("Password must be at least 8 characters long")
+    
+    if not any(c.isupper() for c in password):
+        errors.append("Password must contain at least one uppercase letter")
+    
+    if not any(c.islower() for c in password):
+        errors.append("Password must contain at least one lowercase letter")
+    
+    if not any(c.isdigit() for c in password):
+        errors.append("Password must contain at least one number")
+    
+    return len(errors) == 0, errors
+
+
+def get_password_strength(password: str) -> tuple[str, str]:
+    """Get password strength indicator.
+    
+    Args:
+        password: Password to check
+        
+    Returns:
+        Tuple of (strength_level, color)
+    """
+    if not password:
+        return "None", "gray"
+    
+    score = 0
+    
+    if len(password) >= 8:
+        score += 1
+    if len(password) >= 12:
+        score += 1
+    if any(c.isupper() for c in password):
+        score += 1
+    if any(c.islower() for c in password):
+        score += 1
+    if any(c.isdigit() for c in password):
+        score += 1
+    if any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
+        score += 1
+    
+    if score <= 2:
+        return "Weak", "red"
+    elif score <= 4:
+        return "Medium", "orange"
+    else:
+        return "Strong", "green"
+
+
 def render_login_ui(auth_manager: AuthManager) -> None:
-    """Render the login UI.
+    """Render the login UI with sign-in and sign-up options.
     
     Args:
         auth_manager: AuthManager instance
     """
-    st.title("🔐 Sign In")
-    st.markdown("Sign in to access BigQuery Insights")
-    
     # Show debug info if enabled
     if DEBUG_AUTH:
         with st.expander("🔍 Debug: Page Load Info", expanded=False):
@@ -447,6 +569,31 @@ def render_login_ui(auth_manager: AuthManager) -> None:
                 "authenticated": st.session_state.get("authenticated", False),
                 "has_user": st.session_state.get("user") is not None
             })
+    
+    # Mode selection: Sign In or Sign Up
+    st.title("🔐 Welcome to BigQuery Insights")
+    
+    auth_mode = st.radio(
+        "Choose an option:",
+        ["Sign In", "Sign Up"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    if auth_mode == "Sign Up":
+        render_signup_ui(auth_manager)
+    else:
+        render_signin_ui(auth_manager)
+
+
+def render_signin_ui(auth_manager: AuthManager) -> None:
+    """Render the sign-in UI.
+    
+    Args:
+        auth_manager: AuthManager instance
+    """
+    st.markdown("### Sign In to Your Account")
+    st.markdown("Sign in to access BigQuery Insights")
     
     # Create tabs for different auth methods
     tab1, tab2 = st.tabs(["Email & Password", "Magic Link"])
@@ -477,7 +624,11 @@ def render_login_ui(auth_manager: AuthManager) -> None:
                             else:
                                 st.error("Sign in failed. Please check your credentials.")
                         except Exception as e:
-                            st.error(f"Sign in error: {str(e)}")
+                            error_msg = str(e)
+                            if "Invalid login credentials" in error_msg or "Email not confirmed" in error_msg:
+                                st.error("❌ Invalid email or password")
+                            else:
+                                st.error(f"❌ Sign in error: {error_msg}")
     
     with tab2:
         st.subheader("Sign in with magic link")
@@ -527,6 +678,112 @@ def render_login_ui(auth_manager: AuthManager) -> None:
                             if DEBUG_AUTH:
                                 st.exception(e)
 
+
+def render_signup_ui(auth_manager: AuthManager) -> None:
+    """Render the sign-up UI.
+    
+    Args:
+        auth_manager: AuthManager instance
+    """
+    st.markdown("### Create a New Account")
+    st.markdown("Sign up to get started with BigQuery Insights")
+    
+    with st.form("signup_form"):
+        email = st.text_input("Email", placeholder="you@example.com")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            password = st.text_input("Password", type="password", key="signup_password")
+        with col2:
+            confirm_password = st.text_input("Confirm Password", type="password")
+        
+        # Password strength indicator
+        if password:
+            strength, color = get_password_strength(password)
+            if strength != "None":
+                st.markdown(f"Password strength: :{color}[{strength}]")
+        
+        # Password requirements
+        with st.expander("📋 Password Requirements"):
+            st.markdown("""
+            Your password must contain:
+            - At least 8 characters
+            - At least one uppercase letter
+            - At least one lowercase letter  
+            - At least one number
+            - (Optional) Special characters for stronger password
+            """)
+        
+        submit = st.form_submit_button("Create Account", use_container_width=True)
+        
+        if submit:
+            # Validate email
+            email_valid, email_error = validate_email(email)
+            if not email_valid:
+                st.error(f"❌ {email_error}")
+                return
+            
+            # Validate password
+            if not password:
+                st.error("❌ Password is required")
+                return
+            
+            password_valid, password_errors = validate_password(password)
+            if not password_valid:
+                st.error("❌ Password does not meet requirements:")
+                for error in password_errors:
+                    st.error(f"  • {error}")
+                return
+            
+            # Validate password match
+            if password != confirm_password:
+                st.error("❌ Passwords do not match")
+                return
+            
+            # All validations passed, attempt sign up
+            with st.spinner("Creating your account..."):
+                try:
+                    response = auth_manager.sign_up(email, password)
+                    
+                    if response:
+                        user = response.get("user")
+                        session = response.get("session")
+                        
+                        if session:
+                            # Email confirmation disabled - auto sign in
+                            st.session_state.authenticated = True
+                            st.session_state.user = user
+                            st.session_state.access_token = response["access_token"]
+                            st.session_state.refresh_token = response["refresh_token"]
+                            st.session_state.expires_at = response["expires_at"]
+                            
+                            st.success("✅ Account created successfully! Welcome!")
+                            logger.info(f"✅ New user signed up and auto-authenticated: {email}")
+                            st.rerun()
+                        else:
+                            # Email confirmation enabled
+                            st.success("✅ Account created successfully!")
+                            st.info("📧 Please check your email to confirm your account before signing in.")
+                            st.info("After confirming, switch to 'Sign In' to access your account.")
+                            logger.info(f"✅ New user signed up (email confirmation required): {email}")
+                    else:
+                        st.error("❌ Sign up failed. Please try again.")
+                        logger.error(f"Sign up failed for {email}: response was None")
+                        
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"Sign up error for {email}: {error_msg}", exc_info=True)
+                    
+                    # Handle specific error cases
+                    if "already registered" in error_msg.lower() or "already exists" in error_msg.lower():
+                        st.error("❌ This email is already registered")
+                        st.info("💡 Try signing in instead, or use a different email address")
+                    elif "password" in error_msg.lower():
+                        st.error(f"❌ Password error: {error_msg}")
+                    elif "email" in error_msg.lower():
+                        st.error(f"❌ Email error: {error_msg}")
+                    else:
+                        st.error(f"❌ Sign up error: {error_msg}")
 
 def check_auth_status(auth_manager: AuthManager) -> bool:
     """Check if user is authenticated and refresh token if needed.
