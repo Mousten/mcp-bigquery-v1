@@ -192,48 +192,108 @@ This creates routes at:
 
 ### Transport Modes
 
-The server supports multiple transport modes:
+The server supports multiple transport modes with **different base paths**:
 
-1. **HTTP Mode** (default): Routes at `/tools/*`
-   ```bash
-   mcp-bigquery --transport http --port 8000
-   ```
+| Transport Mode | Base Path | Tool Endpoints | Example |
+|---|---|---|---|
+| **HTTP** (default) | None | `/tools/*` | `GET /tools/datasets` |
+| **HTTP-Stream** | `/stream` | `/stream/tools/*` | `GET /stream/tools/datasets` |
+| **SSE** | N/A | MCP protocol only | Use MCP client |
+| **Stdio** | N/A | MCP protocol only | Use MCP client |
 
-2. **HTTP-Stream Mode**: Routes at `/stream/tools/*`
-   ```bash
-   mcp-bigquery --transport http-stream --port 8000
-   ```
+#### ⚠️ Important: Path Differences
 
-3. **SSE Mode**: MCP protocol over Server-Sent Events
-   ```bash
-   mcp-bigquery --transport sse --port 8000
-   ```
+**In HTTP-Stream mode:**
+- ✅ **Recommended**: `GET /stream/tools/datasets` (primary path)
+- ✅ **Also works**: `GET /tools/datasets` (backwards compatible)
+- Both paths work! The `/stream/tools/*` paths are recommended for new code.
 
-4. **Stdio Mode**: MCP protocol over stdin/stdout
-   ```bash
-   mcp-bigquery --transport stdio
-   ```
+**In regular HTTP mode, routes have NO prefix:**
+- ✅ Correct: `GET /tools/datasets`
+- ❌ Wrong: `GET /stream/tools/datasets` → Returns 404
+
+**Note on Backwards Compatibility**: As of the latest version, http-stream mode exposes tools at both `/stream/tools/*` (recommended) and `/tools/*` (for compatibility with existing clients). This prevents 404 errors when upgrading from HTTP mode to HTTP-Stream mode.
+
+#### Starting the Server
+
+**HTTP Mode (default):**
+```bash
+uv run mcp-bigquery --transport http --port 8000
+# Tool endpoints: /tools/*
+# Chat endpoints: /chat/*
+```
+
+**HTTP-Stream Mode:**
+```bash
+uv run mcp-bigquery --transport http-stream --port 8000
+# Tool endpoints: /stream/tools/*
+# Chat endpoints: /stream/chat/*
+# NDJSON stream: /stream/ndjson/
+```
+
+**SSE Mode** (MCP protocol over Server-Sent Events):
+```bash
+uv run mcp-bigquery --transport sse --port 8000
+# Use MCP client library, not direct HTTP
+```
+
+**Stdio Mode** (MCP protocol over stdin/stdout):
+```bash
+uv run mcp-bigquery --transport stdio
+# Use MCP client library, not HTTP
+```
 
 ---
 
 ## Client Usage Examples
 
-### Python (httpx)
+### Python (httpx) - HTTP Mode
 
 ```python
 import httpx
 
+# For HTTP mode (default)
+BASE_URL = "http://localhost:8000"
+
 async with httpx.AsyncClient() as client:
     # Get datasets
     response = await client.get(
-        "http://localhost:8000/tools/datasets",
+        f"{BASE_URL}/tools/datasets",
         headers={"Authorization": f"Bearer {token}"}
     )
     datasets = response.json()
     
     # Execute SQL
     response = await client.post(
-        "http://localhost:8000/tools/execute_bigquery_sql",
+        f"{BASE_URL}/tools/execute_bigquery_sql",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "sql": "SELECT 1 as num",
+            "use_cache": True
+        }
+    )
+    result = response.json()
+```
+
+### Python (httpx) - HTTP-Stream Mode
+
+```python
+import httpx
+
+# For HTTP-Stream mode - note the /stream prefix!
+BASE_URL = "http://localhost:8000/stream"
+
+async with httpx.AsyncClient() as client:
+    # Get datasets (note /stream prefix)
+    response = await client.get(
+        f"{BASE_URL}/tools/datasets",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    datasets = response.json()
+    
+    # Execute SQL (note /stream prefix)
+    response = await client.post(
+        f"{BASE_URL}/tools/execute_bigquery_sql",
         headers={"Authorization": f"Bearer {token}"},
         json={
             "sql": "SELECT 1 as num",
@@ -330,12 +390,46 @@ GET    /tools/tables
 
 ### Issue: Routes return 404
 
-**Possible causes:**
-1. Server not running in correct mode
-2. Incorrect URL (check for `/stream` prefix in http-stream mode)
-3. Router not included in FastAPI app
+**Good News:** As of the latest version, http-stream mode supports BOTH `/stream/tools/*` and `/tools/*` paths for backwards compatibility, so 404s should be rare!
 
-**Solution:** Verify server is running and check which transport mode is active.
+**If you still get 404s:**
+
+1. **Check which transport mode the server is running:**
+   ```bash
+   # Look at server startup logs
+   # HTTP mode: "Starting server in HTTP mode..."
+   # HTTP-Stream mode: "Starting server in HTTP-STREAM mode..."
+   ```
+
+2. **Verify the endpoint path is correct:**
+   ```python
+   # These all work in http-stream mode:
+   url = "http://localhost:8000/stream/tools/datasets"  # Recommended
+   url = "http://localhost:8000/tools/datasets"         # Also works
+   
+   # In http mode, only unprefixed works:
+   url = "http://localhost:8000/tools/datasets"         # Works
+   url = "http://localhost:8000/stream/tools/datasets"  # 404
+   ```
+
+3. **Check server is actually running:**
+   ```bash
+   # Test basic connectivity
+   curl http://localhost:8000/stream/
+   # Should return: {"message": "MCP tools root", ...}
+   ```
+
+**Quick Test:**
+```bash
+# Both of these work in http-stream mode:
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/stream/tools/datasets
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/tools/datasets
+
+# Only unprefixed works in http mode:
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/tools/datasets
+```
+
+---
 
 ### Issue: Routes return 401
 
@@ -346,6 +440,16 @@ GET    /tools/tables
 
 **Solution:** Ensure valid JWT token is provided in Authorization header.
 
+```bash
+# Check token is provided
+curl -H "Authorization: Bearer YOUR_TOKEN_HERE" http://localhost:8000/tools/datasets
+
+# Verify token hasn't expired
+# JWT tokens from Supabase expire after 1 hour by default
+```
+
+---
+
 ### Issue: Routes return 403
 
 **Possible causes:**
@@ -355,13 +459,42 @@ GET    /tools/tables
 
 **Solution:** Check user roles and permissions in Supabase.
 
+```sql
+-- Check user roles
+SELECT * FROM user_roles WHERE user_id = 'YOUR_USER_ID';
+
+-- Check role permissions
+SELECT rp.* FROM role_permissions rp
+JOIN user_roles ur ON ur.role = rp.role
+WHERE ur.user_id = 'YOUR_USER_ID';
+
+-- Check dataset access
+SELECT rda.* FROM role_dataset_access rda
+JOIN user_roles ur ON ur.role = rda.role
+WHERE ur.user_id = 'YOUR_USER_ID';
+```
+
 ---
 
 ## Summary
 
 ✅ **All BigQuery MCP tools are exposed as HTTP REST endpoints**
-✅ **Routes are registered and accessible at `/tools/*` (HTTP mode)**
+✅ **Routes are transport-mode specific:**
+   - HTTP mode: `/tools/*`
+   - HTTP-Stream mode: `/stream/tools/*`
 ✅ **Authentication and authorization are enforced**
 ✅ **Integration tested and working**
 
-The HTTP endpoints are fully functional and ready for use by any HTTP client, including the Streamlit conversation manager.
+The HTTP endpoints are fully functional and ready for use by any HTTP client, including the Streamlit conversation manager. **Remember to use the correct base path for your transport mode to avoid 404 errors!**
+
+### Quick Reference Card
+
+| Need | HTTP Mode | HTTP-Stream Mode (Recommended) | HTTP-Stream Mode (Compatible) |
+|---|---|---|---|
+| **List datasets** | `GET /tools/datasets` | `GET /stream/tools/datasets` | `GET /tools/datasets` |
+| **Execute SQL** | `POST /tools/execute_bigquery_sql` | `POST /stream/tools/execute_bigquery_sql` | `POST /tools/execute_bigquery_sql` |
+| **List tables** | `GET /tools/tables?dataset_id=X` | `GET /stream/tools/tables?dataset_id=X` | `GET /tools/tables?dataset_id=X` |
+| **Chat sessions** | `GET /chat/sessions` | `GET /stream/chat/sessions` | N/A |
+| **Server info** | `GET /` | `GET /stream/` | N/A |
+
+**Note:** In http-stream mode, both `/stream/tools/*` (recommended) and `/tools/*` (backwards compatible) work. Use `/stream/tools/*` for new code.

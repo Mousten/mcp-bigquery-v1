@@ -93,6 +93,11 @@ def main():
         fastapi_app.include_router(health_router, prefix="/stream")
         fastapi_app.include_router(preferences_router, prefix="/stream")
         fastapi_app.include_router(chat_router, prefix="/stream")
+        
+        # Also include tools router without prefix for backwards compatibility
+        # This allows clients using /tools/* paths to still work
+        # TODO: Consider deprecating unprefixed paths in future versions
+        fastapi_app.include_router(tools_router)
 
         # Include a small index at /stream so a GET /stream returns something (helps n8n / browsers)
         from fastapi import APIRouter
