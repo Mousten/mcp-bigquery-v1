@@ -17,19 +17,33 @@ class SupabaseKnowledgeBase:
     def __init__(self, supabase_url: Optional[str] = None, supabase_key: Optional[str] = None):
         """Initialize the Supabase client."""
         self.supabase_url = supabase_url or os.getenv("SUPABASE_URL")
+        
+        # Determine which key to use and track it
+        service_key = os.getenv("SUPABASE_SERVICE_KEY")
+        anon_key = os.getenv("SUPABASE_ANON_KEY")
+        
         # Try to use service role key first, then anon key
-        self.supabase_key = (
-            supabase_key or 
-            os.getenv("SUPABASE_SERVICE_KEY") or 
-            os.getenv("SUPABASE_ANON_KEY")
-        )
+        if supabase_key:
+            self.supabase_key = supabase_key
+            self._use_service_key = False  # Unknown if provided key is service key
+        elif service_key:
+            self.supabase_key = service_key
+            self._use_service_key = True
+        elif anon_key:
+            self.supabase_key = anon_key
+            self._use_service_key = False
+        else:
+            self.supabase_key = None
         
         if not self.supabase_url or not self.supabase_key:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY (or SUPABASE_ANON_KEY) must be provided or set in environment variables.")
         
         self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
         self._connection_verified = False
-        self._use_service_key = bool(os.getenv("SUPABASE_SERVICE_KEY"))
+        
+        # Log warning if service key is not available for RLS-sensitive operations
+        if not self._use_service_key:
+            print("WARNING: SupabaseKnowledgeBase initialized without service key. RLS-protected operations may fail.")
     
     async def verify_connection(self) -> bool:
         """Verify the Supabase connection and schema."""
@@ -1483,6 +1497,10 @@ class SupabaseKnowledgeBase:
         if not await self.verify_connection():
             return None
         
+        # Warn if not using service key
+        if not self._use_service_key:
+            print("WARNING: Creating chat session without service key - this may fail due to RLS policies")
+        
         try:
             from datetime import timezone
             now = datetime.now(timezone.utc)
@@ -1494,12 +1512,30 @@ class SupabaseKnowledgeBase:
                 "updated_at": now.isoformat()
             }
             
+            print(f"Creating chat session for user {user_id} using {'service key' if self._use_service_key else 'anon key'}")
             result = self.supabase.table("chat_sessions").insert(session_data).execute()
             
             if result.data:
                 return result.data[0]
             return None
             
+        except APIError as e:
+            error_msg = f"Error creating chat session: {e}"
+            print(error_msg)
+            if hasattr(e, 'message'):
+                print(f"API Error message: {e.message}")
+            if hasattr(e, 'details') and e.details:
+                print(f"API Error details: {e.details}")
+            if hasattr(e, 'hint') and e.hint:
+                print(f"API Error hint: {e.hint}")
+            if hasattr(e, 'code'):
+                print(f"API Error code: {e.code}")
+            
+            # If RLS error and not using service key, provide helpful message
+            if hasattr(e, 'code') and e.code == '42501' and not self._use_service_key:
+                print("HINT: This is an RLS policy violation. Ensure SUPABASE_SERVICE_KEY is set in environment variables.")
+            
+            return None
         except Exception as e:
             print(f"Error creating chat session: {e}")
             return None
