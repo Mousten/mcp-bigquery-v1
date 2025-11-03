@@ -83,9 +83,16 @@ def create_chat_router(
         )
         
         if not session:
+            # Provide more helpful error message
+            error_detail = "Failed to create chat session. "
+            if not knowledge_base._use_service_key:
+                error_detail += "Server is not configured with service key (SUPABASE_SERVICE_KEY). This may cause RLS policy violations."
+            else:
+                error_detail += "Check server logs for details or ensure RLS policies allow service role access."
+            
             raise HTTPException(
                 status_code=500,
-                detail="Failed to create chat session"
+                detail=error_detail
             )
         
         return session
