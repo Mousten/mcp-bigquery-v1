@@ -28,12 +28,12 @@ def create_mcp_app(bigquery_client, config, event_manager) -> FastMCP:
         description="A FastMCP server for securely accessing BigQuery datasets with intelligent caching, schema evolution tracking, and query analytics via Supabase.",
     )
 
-    # Initialize knowledge base
+    # Initialize knowledge base with service key for RLS bypass
     knowledge_base = None
     try:
         knowledge_base = SupabaseKnowledgeBase(
-            supabase_url=getattr(config, 'SUPABASE_URL', None),
-            supabase_key=getattr(config, 'SUPABASE_ANON_KEY', None),
+            supabase_url=getattr(config, 'supabase_url', None),
+            supabase_key=getattr(config, 'supabase_service_key', None) or getattr(config, 'supabase_key', None),
         )
     except Exception as e:
         logger.warning(f"Failed to initialize Supabase knowledge base: {e}")

@@ -1,4 +1,9 @@
 """Main entry point for the MCP BigQuery server."""
+from dotenv import load_dotenv
+
+# Load .env file BEFORE anything else to ensure environment variables are available
+load_dotenv()
+
 import sys
 import argparse
 from .config.settings import ServerConfig
@@ -57,9 +62,12 @@ def main():
         # Start FastAPI app with a streaming HTTP endpoint
         fastapi_app = create_fastapi_app()
 
-        # Initialize SupabaseKnowledgeBase
+        # Initialize SupabaseKnowledgeBase with service key for RLS bypass
         from .core.supabase_client import SupabaseKnowledgeBase
-        knowledge_base = SupabaseKnowledgeBase(supabase_url=config.supabase_url, supabase_key=config.supabase_key)
+        knowledge_base = SupabaseKnowledgeBase(
+            supabase_url=config.supabase_url,
+            supabase_key=config.supabase_service_key or config.supabase_key
+        )
 
         # Create and include routers (same as regular HTTP)
         resources_router = create_resources_router(bigquery_client, config, knowledge_base)
@@ -120,9 +128,12 @@ def main():
         # Create FastAPI app for HTTP mode
         fastapi_app = create_fastapi_app()
 
-        # Initialize SupabaseKnowledgeBase
+        # Initialize SupabaseKnowledgeBase with service key for RLS bypass
         from .core.supabase_client import SupabaseKnowledgeBase
-        knowledge_base = SupabaseKnowledgeBase(supabase_url=config.supabase_url, supabase_key=config.supabase_key)
+        knowledge_base = SupabaseKnowledgeBase(
+            supabase_url=config.supabase_url,
+            supabase_key=config.supabase_service_key or config.supabase_key
+        )
 
         # Create and include routers
         resources_router = create_resources_router(bigquery_client, config, knowledge_base)
