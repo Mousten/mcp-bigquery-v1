@@ -198,7 +198,8 @@ class UserContext(BaseModel):
                 token,
                 secret,
                 algorithms=["HS256"],
-                options={"verify_exp": True}
+                options={"verify_exp": True},
+                leeway=10
             )
         except jwt.ExpiredSignatureError:
             raise AuthenticationError("Token has expired")
@@ -271,7 +272,8 @@ class UserContext(BaseModel):
                 token,
                 secret,
                 algorithms=["HS256"],
-                options={"verify_exp": True}
+                options={"verify_exp": True},
+                leeway=10
             )
         except jwt.ExpiredSignatureError:
             raise AuthenticationError("Token has expired")
@@ -444,7 +446,8 @@ def verify_token(token: str, jwt_secret: Optional[str] = None) -> Dict[str, Any]
             token,
             secret,
             algorithms=["HS256"],
-            options={"verify_exp": True}
+            options={"verify_exp": True},
+            leeway=10
         )
         return payload
     except jwt.ExpiredSignatureError:
