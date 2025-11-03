@@ -17,12 +17,13 @@ from ..core.auth import UserContext
 from ..api.dependencies import create_auth_dependency
 
 
-def create_tools_router(bigquery_client, event_manager, knowledge_base) -> APIRouter:
+def create_tools_router(bigquery_client, event_manager, knowledge_base, config=None) -> APIRouter:
     """Create router for tool-related endpoints."""
     router = APIRouter(prefix="/tools", tags=["tools"])
     
     # Create auth dependency with knowledge base for role loading
-    get_current_user = create_auth_dependency(knowledge_base)
+    jwt_secret = config.supabase_jwt_secret if config else None
+    get_current_user = create_auth_dependency(knowledge_base, jwt_secret)
 
     @router.post("/query")
     async def query_tool_fastapi(
