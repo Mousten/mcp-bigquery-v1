@@ -139,6 +139,22 @@ class TestVerifyToken:
         with patch.dict('os.environ', {}, clear=True):
             with pytest.raises(AuthenticationError, match="SUPABASE_JWT_SECRET not configured"):
                 verify_token(valid_token, jwt_secret=None)
+    
+    def test_token_with_clock_skew(self, jwt_secret):
+        """Test that tokens with minor clock skew are accepted due to leeway."""
+        # Create a token with iat slightly in the future (simulating clock skew)
+        payload = {
+            "sub": "user-123",
+            "email": "test@example.com",
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            "iat": datetime.now(timezone.utc) + timedelta(seconds=5),  # 5 seconds in future
+        }
+        token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+        
+        # Should succeed due to 10-second leeway
+        decoded = verify_token(token, jwt_secret)
+        assert decoded["sub"] == "user-123"
+        assert decoded["email"] == "test@example.com"
 
 
 class TestUserContext:
@@ -285,6 +301,23 @@ class TestUserContextAsync:
         """Test that expired token raises AuthenticationError in async context."""
         with pytest.raises(AuthenticationError, match="Token has expired"):
             await UserContext.from_token_async(expired_token, jwt_secret=jwt_secret)
+    
+    @pytest.mark.asyncio
+    async def test_from_token_async_with_clock_skew(self, jwt_secret):
+        """Test that from_token_async accepts tokens with minor clock skew."""
+        # Create a token with iat slightly in the future (simulating clock skew)
+        payload = {
+            "sub": "user-456",
+            "email": "skewtest@example.com",
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            "iat": datetime.now(timezone.utc) + timedelta(seconds=8),  # 8 seconds in future
+        }
+        token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+        
+        # Should succeed due to 10-second leeway
+        context = await UserContext.from_token_async(token, jwt_secret=jwt_secret)
+        assert context.user_id == "user-456"
+        assert context.email == "skewtest@example.com"
 
 
 class TestRoleCache:
