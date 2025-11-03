@@ -170,12 +170,6 @@ def get_conversation_manager(config: StreamlitConfig, _user_context: Any):
     from mcp_bigquery.client import MCPClient
     from mcp_bigquery.client.config import ClientConfig
     from mcp_bigquery.core.supabase_client import SupabaseKnowledgeBase
-    from mcp_bigquery.core.bigquery_client import get_bigquery_client
-    
-    # Initialize BigQuery client
-    bq_client = get_bigquery_client(
-        project_id=config.project_id
-    )
     
     # Initialize MCP client
     mcp_config = ClientConfig(
