@@ -211,6 +211,11 @@ class MCPBigQueryClient:
             raise
             
         except httpx.HTTPStatusError as e:
+            # Don't retry client errors (4xx) - these are validation/permission errors
+            if 400 <= e.response.status_code < 500:
+                logger.warning(f"Client error {e.response.status_code} - not retrying")
+                raise
+            
             # For 5xx errors, retry
             if e.response.status_code >= 500 and retry_count < self.max_retries:
                 wait_time = 2 ** retry_count

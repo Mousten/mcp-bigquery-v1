@@ -2,8 +2,9 @@
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 from pydantic import ValidationError
 
 from ..llm.providers import (
@@ -116,7 +117,36 @@ class InsightsAgent:
                 metadata={"request_metadata": request.metadata}
             )
             
-            # Step 2: Generate SQL query
+            # Step 2: Check if this is a metadata question (datasets/tables/schema)
+            metadata_type = self._is_metadata_question(request.question)
+            if metadata_type:
+                logger.info(f"Routing to metadata handler: {metadata_type}")
+                
+                if metadata_type == "datasets":
+                    response = await self._handle_datasets_question()
+                elif metadata_type == "tables":
+                    response = await self._handle_tables_question(request.question, context)
+                elif metadata_type == "schema":
+                    response = await self._handle_schema_question(request.question, context)
+                else:
+                    response = AgentResponse(
+                        success=False,
+                        error="Unknown metadata question type",
+                        error_type="unknown"
+                    )
+                
+                # Save assistant response
+                await self._save_message(
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    role="assistant",
+                    content=response.answer or response.error or "",
+                    metadata=response.metadata or {}
+                )
+                
+                return response
+            
+            # Step 3: Generate SQL query (for data questions)
             sql_result = await self._generate_sql(
                 question=request.question,
                 context=context
@@ -138,7 +168,33 @@ class InsightsAgent:
                 )
                 return error_response
             
-            # Step 3: Execute query
+            # Step 4: Validate SQL before execution
+            is_valid, validation_error = self._is_valid_sql(sql_result.sql)
+            if not is_valid:
+                error_msg = f"Invalid SQL query: {validation_error}"
+                logger.warning(f"SQL validation failed: {validation_error}")
+                error_response = AgentResponse(
+                    success=False,
+                    sql_query=sql_result.sql,
+                    sql_explanation=sql_result.explanation,
+                    error=error_msg,
+                    error_type="validation"
+                )
+                await self._save_message(
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    role="assistant",
+                    content=error_msg,
+                    metadata={
+                        "error": True,
+                        "error_type": "validation",
+                        "sql": sql_result.sql,
+                        "validation_error": validation_error
+                    }
+                )
+                return error_response
+            
+            # Step 5: Execute query
             try:
                 query_results = await self._execute_query(sql_result.sql)
             except (AuthorizationError, AuthenticationError) as e:
@@ -186,19 +242,19 @@ class InsightsAgent:
                 )
                 return error_response
             
-            # Step 4: Generate summary
+            # Step 6: Generate summary
             summary = await self._generate_summary(
                 question=request.question,
                 sql_query=sql_result.sql,
                 results=query_results
             )
             
-            # Step 5: Generate chart suggestions
+            # Step 7: Generate chart suggestions
             chart_suggestions = await self._generate_chart_suggestions(
                 results=query_results
             )
             
-            # Step 6: Build response
+            # Step 8: Build response
             response = AgentResponse(
                 success=True,
                 answer=summary,
@@ -794,3 +850,269 @@ class InsightsAgent:
             )
         except Exception as e:
             logger.error(f"Failed to save message: {e}", exc_info=True)
+    
+    def _is_metadata_question(self, question: str) -> Optional[str]:
+        """Determine if question is about metadata (datasets/tables/schemas).
+        
+        Args:
+            question: User's question
+            
+        Returns:
+            Type of metadata question ("datasets", "tables", "schema") or None
+        """
+        question_lower = question.lower()
+        
+        # Dataset listing patterns
+        dataset_patterns = [
+            "what datasets", "list datasets", "show datasets", "available datasets",
+            "which datasets", "dataset list", "datasets do i have", "datasets can i access",
+            "what data sets", "list data sets", "show data sets", "list all datasets",
+            "show all datasets", "all datasets"
+        ]
+        if any(pattern in question_lower for pattern in dataset_patterns):
+            return "datasets"
+        
+        # Table listing patterns
+        table_patterns = [
+            "what tables", "list tables", "show tables", "available tables",
+            "which tables", "table list", "tables in", "tables do i have"
+        ]
+        if any(pattern in question_lower for pattern in table_patterns):
+            return "tables"
+        
+        # Schema/describe patterns
+        schema_patterns = [
+            "describe table", "describe the table", "table schema", "schema of",
+            "table structure", "what columns", "show schema", "show structure",
+            "what fields", "table definition", "column names"
+        ]
+        if any(pattern in question_lower for pattern in schema_patterns):
+            return "schema"
+        
+        return None
+    
+    def _is_valid_sql(self, sql: str) -> Tuple[bool, Optional[str]]:
+        """Validate SQL query before execution.
+        
+        Args:
+            sql: SQL query to validate
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if not sql or not sql.strip():
+            return False, "SQL query is empty"
+        
+        sql = sql.strip()
+        
+        # Check if it's only a comment
+        if sql.startswith('--'):
+            lines = sql.split('\n')
+            non_comment_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith('--')]
+            if not non_comment_lines:
+                return False, "SQL query contains only comments, no actual query"
+        
+        # Check for forbidden operations first (should be read-only)
+        sql_upper = sql.upper()
+        forbidden_keywords = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'TRUNCATE']
+        for keyword in forbidden_keywords:
+            if keyword in sql_upper.split():
+                return False, f"Only read-only SELECT queries are allowed. {keyword} is not permitted."
+        
+        # Check if it contains required SQL keywords
+        required_keywords = ['SELECT', 'WITH']
+        if not any(keyword in sql_upper for keyword in required_keywords):
+            return False, "SQL query must contain a SELECT statement"
+        
+        return True, None
+    
+    async def _handle_datasets_question(self) -> AgentResponse:
+        """Handle question about listing datasets.
+        
+        Returns:
+            Agent response with dataset information
+        """
+        try:
+            datasets_result = await self.mcp_client.list_datasets()
+            datasets = datasets_result.get("datasets", [])
+            
+            if not datasets:
+                answer = "You currently don't have access to any datasets. Please contact your administrator to grant access."
+            else:
+                dataset_names = [d.get("datasetId", d.get("dataset_id", "")) for d in datasets]
+                answer = f"You have access to {len(datasets)} dataset(s):\n\n"
+                for i, name in enumerate(dataset_names, 1):
+                    answer += f"{i}. {name}\n"
+                answer += "\nYou can ask me to show tables in any of these datasets or query their data."
+            
+            return AgentResponse(
+                success=True,
+                answer=answer,
+                metadata={
+                    "metadata_type": "datasets",
+                    "dataset_count": len(datasets)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error listing datasets: {e}", exc_info=True)
+            return AgentResponse(
+                success=False,
+                error=f"Failed to retrieve datasets: {str(e)}",
+                error_type="execution"
+            )
+    
+    async def _handle_tables_question(self, question: str, context: ConversationContext) -> AgentResponse:
+        """Handle question about listing tables in a dataset.
+        
+        Args:
+            question: User's question
+            context: Conversation context
+            
+        Returns:
+            Agent response with table information
+        """
+        try:
+            # Try to extract dataset name from question
+            dataset_id = None
+            
+            # Look for dataset names in the question
+            for ds in context.allowed_datasets:
+                if ds in question.lower():
+                    dataset_id = ds
+                    break
+            
+            # If not found, use the first allowed dataset
+            if not dataset_id and context.allowed_datasets:
+                if "*" not in context.allowed_datasets:
+                    dataset_id = list(context.allowed_datasets)[0]
+            
+            if not dataset_id:
+                return AgentResponse(
+                    success=False,
+                    error="Please specify which dataset you'd like to see tables for.",
+                    error_type="validation"
+                )
+            
+            tables_result = await self.mcp_client.list_tables(dataset_id)
+            tables = tables_result.get("tables", [])
+            
+            if not tables:
+                answer = f"The dataset '{dataset_id}' has no tables or you don't have access to any tables in it."
+            else:
+                table_names = [t.get("tableId", t.get("table_id", "")) for t in tables]
+                answer = f"Dataset '{dataset_id}' contains {len(tables)} table(s):\n\n"
+                for i, name in enumerate(table_names, 1):
+                    answer += f"{i}. {name}\n"
+                answer += "\nYou can ask me to describe any of these tables or query their data."
+            
+            return AgentResponse(
+                success=True,
+                answer=answer,
+                metadata={
+                    "metadata_type": "tables",
+                    "dataset_id": dataset_id,
+                    "table_count": len(tables)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error listing tables: {e}", exc_info=True)
+            return AgentResponse(
+                success=False,
+                error=f"Failed to retrieve tables: {str(e)}",
+                error_type="execution"
+            )
+    
+    async def _handle_schema_question(self, question: str, context: ConversationContext) -> AgentResponse:
+        """Handle question about table schema.
+        
+        Args:
+            question: User's question
+            context: Conversation context
+            
+        Returns:
+            Agent response with schema information
+        """
+        try:
+            # Try to extract table reference from question
+            # Look for patterns like "dataset.table" or just "table"
+            table_ref_match = re.search(r'([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)', question)
+            
+            dataset_id = None
+            table_id = None
+            
+            if table_ref_match:
+                dataset_id = table_ref_match.group(1)
+                table_id = table_ref_match.group(2)
+            else:
+                # Look for just a table name
+                words = question.split()
+                for i, word in enumerate(words):
+                    if word.lower() in ['table', 'describe', 'schema', 'structure']:
+                        if i + 1 < len(words):
+                            potential_table = words[i + 1].strip('.,?!')
+                            table_id = potential_table
+                            break
+            
+            if not table_id:
+                return AgentResponse(
+                    success=False,
+                    error="Please specify which table you'd like to see the schema for (e.g., 'describe table dataset.tablename').",
+                    error_type="validation"
+                )
+            
+            # If dataset not specified, try to find it
+            if not dataset_id and context.allowed_datasets:
+                if "*" not in context.allowed_datasets:
+                    dataset_id = list(context.allowed_datasets)[0]
+            
+            if not dataset_id:
+                return AgentResponse(
+                    success=False,
+                    error=f"Please specify the dataset for table '{table_id}' (e.g., 'dataset.{table_id}').",
+                    error_type="validation"
+                )
+            
+            schema_result = await self.mcp_client.get_table_schema(
+                dataset_id=dataset_id,
+                table_id=table_id,
+                include_samples=False
+            )
+            
+            schema = schema_result.get("schema", [])
+            
+            if not schema:
+                answer = f"Could not retrieve schema for table {dataset_id}.{table_id}."
+            else:
+                answer = f"Schema for table {dataset_id}.{table_id}:\n\n"
+                for field in schema:
+                    field_name = field.get("name", "")
+                    field_type = field.get("type", "")
+                    field_mode = field.get("mode", "NULLABLE")
+                    description = field.get("description", "")
+                    
+                    answer += f"• {field_name} ({field_type}, {field_mode})"
+                    if description:
+                        answer += f": {description}"
+                    answer += "\n"
+                
+                num_rows = schema_result.get("numRows") or schema_result.get("num_rows")
+                if num_rows is not None:
+                    answer += f"\nTotal rows: {num_rows:,}"
+            
+            return AgentResponse(
+                success=True,
+                answer=answer,
+                metadata={
+                    "metadata_type": "schema",
+                    "dataset_id": dataset_id,
+                    "table_id": table_id,
+                    "field_count": len(schema)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error getting table schema: {e}", exc_info=True)
+            return AgentResponse(
+                success=False,
+                error=f"Failed to retrieve table schema: {str(e)}",
+                error_type="execution"
+            )

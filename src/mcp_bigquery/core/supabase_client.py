@@ -280,7 +280,9 @@ class SupabaseKnowledgeBase:
             if user_id:
                 history_data["user_id"] = user_id
             
-            self.supabase.table("query_history").insert(history_data).execute()
+            # Note: Saving to query_cache instead of query_history (table doesn't exist)
+            # This is for query pattern tracking, not caching results
+            self.supabase.table("query_cache").insert(history_data).execute()
             
             return True
             
