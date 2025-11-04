@@ -403,8 +403,15 @@ class ConversationManager:
                 limit=100  # Get more to check if summarization needed
             )
             
+            logger.info(f"Context management: {len(messages)} messages in session {session_id}")
+            
+            # Estimate token count
+            total_tokens = sum(len(msg.get("content", "")) // 4 for msg in messages)
+            logger.info(f"Estimated total tokens in context: {total_tokens}")
+            
             # If we have many messages, summarize older ones
             if len(messages) > self.context_summarization_threshold:
+                logger.info(f"Triggering summarization (threshold: {self.context_summarization_threshold})")
                 await self._summarize_old_context(
                     session_id=session_id,
                     user_id=user_id,
@@ -436,11 +443,35 @@ class ConversationManager:
             if not old_messages:
                 return
             
-            # Create a summary of old messages
+            # Filter out existing summary messages from old_messages to avoid nested summaries
+            old_messages_no_summaries = [
+                msg for msg in old_messages 
+                if not (
+                    msg.get("role") == "system" and 
+                    msg.get("content", "").startswith("Previous conversation summary:")
+                )
+            ]
+            
+            if not old_messages_no_summaries:
+                logger.info("No new messages to summarize (all are existing summaries)")
+                return
+            
+            # Create a summary of old messages (excluding existing summaries)
             summary_parts = []
-            for msg in old_messages[-10:]:  # Summarize last 10 old messages
+            for msg in old_messages_no_summaries[-10:]:  # Summarize last 10 old messages
                 role = msg.get("role", "")
-                content = msg.get("content", "")[:200]  # Truncate long messages
+                content = msg.get("content", "")
+                
+                # Truncate at word boundary to avoid cutting mid-word
+                max_length = 200
+                if len(content) > max_length:
+                    # Find last space before max_length
+                    truncate_at = content[:max_length].rfind(' ')
+                    if truncate_at > 0:
+                        content = content[:truncate_at] + "..."
+                    else:
+                        content = content[:max_length] + "..."
+                
                 summary_parts.append(f"{role}: {content}")
             
             summary_text = "Previous conversation summary:\n" + "\n".join(summary_parts)
@@ -451,11 +482,11 @@ class ConversationManager:
                 user_id=user_id,
                 role="system",
                 content=summary_text,
-                metadata={"summary": True, "summarized_messages": len(old_messages)}
+                metadata={"summary": True, "summarized_messages": len(old_messages_no_summaries)}
             )
             
             logger.info(
-                f"Summarized {len(old_messages)} old messages for session {session_id}"
+                f"Summarized {len(old_messages_no_summaries)} old messages for session {session_id}"
             )
             
         except Exception as e:
