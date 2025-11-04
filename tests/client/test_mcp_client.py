@@ -43,23 +43,18 @@ class TestMCPClientInitialization:
         """Test client initialization."""
         client = MCPClient(client_config)
         assert client.config == client_config
-        assert client._client is None
     
     @pytest.mark.asyncio
     async def test_context_manager(self, client_config):
         """Test async context manager."""
         async with MCPClient(client_config) as client:
-            assert client._client is not None
-        assert client._client is None
+            assert isinstance(client, MCPClient)
     
     @pytest.mark.asyncio
     async def test_close(self, client_config):
-        """Test explicit close."""
+        """Test explicit close (no-op for backwards compatibility)."""
         client = MCPClient(client_config)
-        await client._ensure_client()
-        assert client._client is not None
         await client.close()
-        assert client._client is None
     
     def test_get_headers_with_token(self, client_config):
         """Test headers include auth token."""
@@ -89,12 +84,13 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client._make_request("GET", "/test")
-        
-        assert result == {"result": "success"}
-        mock_http_client.request.assert_called_once()
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client._make_request("GET", "/test")
+            
+            assert result == {"result": "success"}
+            mock_http_client.request.assert_called_once()
+            mock_http_client.aclose.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_make_request_with_json_data(self, client_config, mock_http_client):
@@ -105,16 +101,17 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        await client._make_request(
-            "POST",
-            "/test",
-            json_data={"key": "value"}
-        )
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["json"] == {"key": "value"}
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            await client._make_request(
+                "POST",
+                "/test",
+                json_data={"key": "value"}
+            )
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["json"] == {"key": "value"}
+            mock_http_client.aclose.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_make_request_with_params(self, client_config, mock_http_client):
@@ -125,16 +122,17 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        await client._make_request(
-            "GET",
-            "/test",
-            params={"param1": "value1"}
-        )
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["params"] == {"param1": "value1"}
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            await client._make_request(
+                "GET",
+                "/test",
+                params={"param1": "value1"}
+            )
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["params"] == {"param1": "value1"}
+            mock_http_client.aclose.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_authentication_error(self, client_config, mock_http_client):
@@ -145,12 +143,13 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(AuthenticationError) as exc_info:
-            await client._make_request("GET", "/test")
-        
-        assert "Invalid token" in str(exc_info.value)
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(AuthenticationError) as exc_info:
+                await client._make_request("GET", "/test")
+            
+            assert "Invalid token" in str(exc_info.value)
+            mock_http_client.aclose.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_authorization_error(self, client_config, mock_http_client):
@@ -161,12 +160,13 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(AuthorizationError) as exc_info:
-            await client._make_request("GET", "/test")
-        
-        assert "Access denied" in str(exc_info.value)
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(AuthorizationError) as exc_info:
+                await client._make_request("GET", "/test")
+            
+            assert "Access denied" in str(exc_info.value)
+            mock_http_client.aclose.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_validation_error(self, client_config, mock_http_client):
@@ -177,12 +177,13 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(ValidationError) as exc_info:
-            await client._make_request("GET", "/test")
-        
-        assert "Invalid input" in str(exc_info.value)
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(ValidationError) as exc_info:
+                await client._make_request("GET", "/test")
+            
+            assert "Invalid input" in str(exc_info.value)
+            mock_http_client.aclose.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_server_error_retry(self, client_config, mock_http_client):
@@ -193,13 +194,15 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(ServerError):
-            await client._make_request("GET", "/test")
-        
-        # Should retry max_retries + 1 times (initial + retries)
-        assert mock_http_client.request.call_count == 3
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(ServerError):
+                await client._make_request("GET", "/test")
+            
+            # Should retry max_retries + 1 times (initial + retries)
+            assert mock_http_client.request.call_count == 3
+            # aclose called 3 times (once per attempt)
+            assert mock_http_client.aclose.call_count == 3
     
     @pytest.mark.asyncio
     async def test_server_error_eventual_success(self, client_config, mock_http_client):
@@ -211,11 +214,13 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(side_effect=responses)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client._make_request("GET", "/test")
-        assert result == {"result": "success"}
-        assert mock_http_client.request.call_count == 2
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client._make_request("GET", "/test")
+            assert result == {"result": "success"}
+            assert mock_http_client.request.call_count == 2
+            # aclose called 2 times (once per attempt)
+            assert mock_http_client.aclose.call_count == 2
     
     @pytest.mark.asyncio
     async def test_timeout_retry(self, client_config, mock_http_client):
@@ -223,13 +228,14 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(side_effect=httpx.TimeoutException("Timeout"))
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(NetworkError) as exc_info:
-            await client._make_request("GET", "/test")
-        
-        assert "timeout" in str(exc_info.value).lower()
-        assert mock_http_client.request.call_count == 3
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(NetworkError) as exc_info:
+                await client._make_request("GET", "/test")
+            
+            assert "timeout" in str(exc_info.value).lower()
+            assert mock_http_client.request.call_count == 3
+            assert mock_http_client.aclose.call_count == 3
     
     @pytest.mark.asyncio
     async def test_network_error_retry(self, client_config, mock_http_client):
@@ -239,13 +245,14 @@ class TestMCPClientRequests:
         )
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(NetworkError) as exc_info:
-            await client._make_request("GET", "/test")
-        
-        assert "Connection failed" in str(exc_info.value)
-        assert mock_http_client.request.call_count == 3
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(NetworkError) as exc_info:
+                await client._make_request("GET", "/test")
+            
+            assert "Connection failed" in str(exc_info.value)
+            assert mock_http_client.request.call_count == 3
+            assert mock_http_client.aclose.call_count == 3
     
     @pytest.mark.asyncio
     async def test_no_retry_on_auth_error(self, client_config, mock_http_client):
@@ -256,13 +263,14 @@ class TestMCPClientRequests:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(AuthenticationError):
-            await client._make_request("GET", "/test")
-        
-        # Should not retry
-        assert mock_http_client.request.call_count == 1
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(AuthenticationError):
+                await client._make_request("GET", "/test")
+            
+            # Should not retry
+            assert mock_http_client.request.call_count == 1
+            mock_http_client.aclose.assert_called_once()
 
 
 class TestMCPClientMethods:
@@ -280,16 +288,16 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.execute_sql("SELECT 1")
-        
-        assert result["rows"] == [{"col1": "value1"}]
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["method"] == "POST"
-        assert "/tools/execute_bigquery_sql" in call_args[1]["url"]
-        assert call_args[1]["json"]["sql"] == "SELECT 1"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.execute_sql("SELECT 1")
+            
+            assert result["rows"] == [{"col1": "value1"}]
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["method"] == "POST"
+            assert "/tools/execute_bigquery_sql" in call_args[1]["url"]
+            assert call_args[1]["json"]["sql"] == "SELECT 1"
     
     @pytest.mark.asyncio
     async def test_execute_sql_with_options(self, client_config, mock_http_client):
@@ -300,18 +308,18 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        await client.execute_sql(
-            "SELECT 1",
-            maximum_bytes_billed=500000000,
-            use_cache=False
-        )
-        
-        call_args = mock_http_client.request.call_args
-        json_data = call_args[1]["json"]
-        assert json_data["maximum_bytes_billed"] == 500000000
-        assert json_data["use_cache"] is False
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            await client.execute_sql(
+                "SELECT 1",
+                maximum_bytes_billed=500000000,
+                use_cache=False
+            )
+            
+            call_args = mock_http_client.request.call_args
+            json_data = call_args[1]["json"]
+            assert json_data["maximum_bytes_billed"] == 500000000
+            assert json_data["use_cache"] is False
     
     @pytest.mark.asyncio
     async def test_list_datasets(self, client_config, mock_http_client):
@@ -324,15 +332,15 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.list_datasets()
-        
-        assert result["datasets"] == ["dataset1", "dataset2"]
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["method"] == "GET"
-        assert "/tools/datasets" in call_args[1]["url"]
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.list_datasets()
+            
+            assert result["datasets"] == ["dataset1", "dataset2"]
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["method"] == "GET"
+            assert "/tools/datasets" in call_args[1]["url"]
     
     @pytest.mark.asyncio
     async def test_list_tables(self, client_config, mock_http_client):
@@ -345,16 +353,16 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.list_tables("my_dataset")
-        
-        assert result["tables"] == ["table1", "table2"]
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["method"] == "POST"
-        assert "/tools/get_tables" in call_args[1]["url"]
-        assert call_args[1]["json"]["dataset_id"] == "my_dataset"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.list_tables("my_dataset")
+            
+            assert result["tables"] == ["table1", "table2"]
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["method"] == "POST"
+            assert "/tools/get_tables" in call_args[1]["url"]
+            assert call_args[1]["json"]["dataset_id"] == "my_dataset"
     
     @pytest.mark.asyncio
     async def test_get_table_schema(self, client_config, mock_http_client):
@@ -367,18 +375,18 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.get_table_schema("my_dataset", "my_table")
-        
-        assert result["schema"] == [{"name": "col1", "type": "STRING"}]
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["method"] == "POST"
-        assert "/tools/get_table_schema" in call_args[1]["url"]
-        json_data = call_args[1]["json"]
-        assert json_data["dataset_id"] == "my_dataset"
-        assert json_data["table_id"] == "my_table"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.get_table_schema("my_dataset", "my_table")
+            
+            assert result["schema"] == [{"name": "col1", "type": "STRING"}]
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["method"] == "POST"
+            assert "/tools/get_table_schema" in call_args[1]["url"]
+            json_data = call_args[1]["json"]
+            assert json_data["dataset_id"] == "my_dataset"
+            assert json_data["table_id"] == "my_table"
     
     @pytest.mark.asyncio
     async def test_explain_table(self, client_config, mock_http_client):
@@ -392,23 +400,23 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.explain_table(
-            "my_project",
-            "my_dataset",
-            "my_table"
-        )
-        
-        assert "explanation" in result
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["method"] == "POST"
-        assert "/tools/explain_table" in call_args[1]["url"]
-        json_data = call_args[1]["json"]
-        assert json_data["project_id"] == "my_project"
-        assert json_data["dataset_id"] == "my_dataset"
-        assert json_data["table_id"] == "my_table"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.explain_table(
+                "my_project",
+                "my_dataset",
+                "my_table"
+            )
+            
+            assert "explanation" in result
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["method"] == "POST"
+            assert "/tools/explain_table" in call_args[1]["url"]
+            json_data = call_args[1]["json"]
+            assert json_data["project_id"] == "my_project"
+            assert json_data["dataset_id"] == "my_dataset"
+            assert json_data["table_id"] == "my_table"
     
     @pytest.mark.asyncio
     async def test_get_query_suggestions(self, client_config, mock_http_client):
@@ -421,19 +429,19 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.get_query_suggestions(
-            tables_mentioned=["table1"],
-            query_context="Get all rows"
-        )
-        
-        assert "suggestions" in result
-        
-        call_args = mock_http_client.request.call_args
-        json_data = call_args[1]["json"]
-        assert json_data["tables_mentioned"] == ["table1"]
-        assert json_data["query_context"] == "Get all rows"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.get_query_suggestions(
+                tables_mentioned=["table1"],
+                query_context="Get all rows"
+            )
+            
+            assert "suggestions" in result
+            
+            call_args = mock_http_client.request.call_args
+            json_data = call_args[1]["json"]
+            assert json_data["tables_mentioned"] == ["table1"]
+            assert json_data["query_context"] == "Get all rows"
     
     @pytest.mark.asyncio
     async def test_analyze_query_performance(self, client_config, mock_http_client):
@@ -446,14 +454,14 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.analyze_query_performance("SELECT 1")
-        
-        assert "analysis" in result
-        
-        call_args = mock_http_client.request.call_args
-        assert "/tools/analyze_query_performance" in call_args[1]["url"]
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.analyze_query_performance("SELECT 1")
+            
+            assert "analysis" in result
+            
+            call_args = mock_http_client.request.call_args
+            assert "/tools/analyze_query_performance" in call_args[1]["url"]
     
     @pytest.mark.asyncio
     async def test_get_schema_changes(self, client_config, mock_http_client):
@@ -466,22 +474,22 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.get_schema_changes(
-            "my_project",
-            "my_dataset",
-            "my_table"
-        )
-        
-        assert "changes" in result
-        
-        call_args = mock_http_client.request.call_args
-        assert call_args[1]["method"] == "GET"
-        params = call_args[1]["params"]
-        assert params["project_id"] == "my_project"
-        assert params["dataset_id"] == "my_dataset"
-        assert params["table_id"] == "my_table"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.get_schema_changes(
+                "my_project",
+                "my_dataset",
+                "my_table"
+            )
+            
+            assert "changes" in result
+            
+            call_args = mock_http_client.request.call_args
+            assert call_args[1]["method"] == "GET"
+            params = call_args[1]["params"]
+            assert params["project_id"] == "my_project"
+            assert params["dataset_id"] == "my_dataset"
+            assert params["table_id"] == "my_table"
     
     @pytest.mark.asyncio
     async def test_manage_cache(self, client_config, mock_http_client):
@@ -494,16 +502,16 @@ class TestMCPClientMethods:
         mock_http_client.request = AsyncMock(return_value=mock_response)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        result = await client.manage_cache("clear", target="all")
-        
-        assert result["result"] == "Cache cleared"
-        
-        call_args = mock_http_client.request.call_args
-        json_data = call_args[1]["json"]
-        assert json_data["action"] == "clear"
-        assert json_data["target"] == "all"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            result = await client.manage_cache("clear", target="all")
+            
+            assert result["result"] == "Cache cleared"
+            
+            call_args = mock_http_client.request.call_args
+            json_data = call_args[1]["json"]
+            assert json_data["action"] == "clear"
+            assert json_data["target"] == "all"
 
 
 class TestMCPClientStreaming:
@@ -533,16 +541,16 @@ class TestMCPClientStreaming:
         mock_http_client.stream = Mock(return_value=mock_stream)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        received_events = []
-        async for event in client.stream_events("test_channel"):
-            received_events.append(event)
-        
-        assert len(received_events) == 3
-        assert received_events[0]["type"] == "connection_established"
-        assert received_events[1]["type"] == "query_started"
-        assert received_events[2]["type"] == "query_completed"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            received_events = []
+            async for event in client.stream_events("test_channel"):
+                received_events.append(event)
+            
+            assert len(received_events) == 3
+            assert received_events[0]["type"] == "connection_established"
+            assert received_events[1]["type"] == "query_started"
+            assert received_events[2]["type"] == "query_completed"
     
     @pytest.mark.asyncio
     async def test_stream_events_skip_empty_lines(self, client_config, mock_http_client):
@@ -564,15 +572,15 @@ class TestMCPClientStreaming:
         mock_http_client.stream = Mock(return_value=mock_stream)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        received_events = []
-        async for event in client.stream_events():
-            received_events.append(event)
-        
-        assert len(received_events) == 2
-        assert received_events[0]["type"] == "event1"
-        assert received_events[1]["type"] == "event2"
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            received_events = []
+            async for event in client.stream_events():
+                received_events.append(event)
+            
+            assert len(received_events) == 2
+            assert received_events[0]["type"] == "event1"
+            assert received_events[1]["type"] == "event2"
     
     @pytest.mark.asyncio
     async def test_stream_events_authentication_error(self, client_config, mock_http_client):
@@ -587,11 +595,11 @@ class TestMCPClientStreaming:
         mock_http_client.stream = Mock(return_value=mock_stream)
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(AuthenticationError):
-            async for event in client.stream_events():
-                pass
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(AuthenticationError):
+                async for event in client.stream_events():
+                    pass
     
     @pytest.mark.asyncio
     async def test_stream_events_network_error(self, client_config, mock_http_client):
@@ -601,11 +609,11 @@ class TestMCPClientStreaming:
         )
         
         client = MCPClient(client_config)
-        client._client = mock_http_client
         
-        with pytest.raises(NetworkError):
-            async for event in client.stream_events():
-                pass
+        with patch('mcp_bigquery.client.mcp_client.httpx.AsyncClient', return_value=mock_http_client):
+            with pytest.raises(NetworkError):
+                async for event in client.stream_events():
+                    pass
 
 
 class TestErrorExtraction:

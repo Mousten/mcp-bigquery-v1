@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import logging
 from typing import Dict, Any, List, Optional, AsyncIterator
+from contextlib import asynccontextmanager
 import httpx
 
 from .config import ClientConfig
@@ -14,12 +16,15 @@ from .exceptions import (
     NetworkError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class MCPClient:
     """Async client for interacting with the MCP BigQuery server.
     
-    This client provides a high-level interface to the MCP BigQuery server's
-    REST API, handling authentication, retries, and error handling.
+    This client is designed to work in Streamlit's environment where each request
+    may occur in a different event loop. We create a new httpx client for each
+    request rather than maintaining a persistent one.
     
     Example:
         ```python
@@ -30,9 +35,9 @@ class MCPClient:
             auth_token="your-jwt-token"
         )
         
-        async with MCPClient(config) as client:
-            datasets = await client.list_datasets()
-            result = await client.execute_sql("SELECT 1")
+        client = MCPClient(config)
+        datasets = await client.list_datasets()
+        result = await client.execute_sql("SELECT 1")
         ```
     """
     
@@ -43,31 +48,38 @@ class MCPClient:
             config: Client configuration
         """
         self.config = config
-        self._client: Optional[httpx.AsyncClient] = None
+        # DO NOT create httpx client here - create per request
     
     async def __aenter__(self) -> "MCPClient":
         """Async context manager entry."""
-        await self._ensure_client()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        await self.close()
+        pass
     
-    async def _ensure_client(self):
-        """Ensure HTTP client is initialized and not closed."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=self.config.timeout,
-                verify=self.config.verify_ssl,
-                headers=self._get_headers()
-            )
+    @asynccontextmanager
+    async def _get_client(self):
+        """Create a fresh httpx client for this request's event loop.
+        
+        This ensures the client and event loop have matching lifetimes,
+        preventing "Event loop is closed" errors in Streamlit.
+        """
+        client = httpx.AsyncClient(
+            timeout=self.config.timeout,
+            verify=self.config.verify_ssl,
+            headers=self._get_headers()
+        )
+        try:
+            logger.debug("Created new httpx client for request")
+            yield client
+        finally:
+            await client.aclose()
+            logger.debug("Closed httpx client after request")
     
     async def close(self):
-        """Close the HTTP client."""
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        """Close method for backwards compatibility (no-op now)."""
+        pass
     
     def _get_headers(self) -> Dict[str, str]:
         """Get HTTP headers including authentication."""
@@ -107,83 +119,85 @@ class MCPClient:
             ServerError: On 500+ responses
             NetworkError: On network failures
         """
-        await self._ensure_client()
-        
         url = f"{self.config.base_url}{path}"
         
-        try:
-            response = await self._client.request(
-                method=method,
-                url=url,
-                json=json_data,
-                params=params
-            )
-            
-            # Handle HTTP error responses
-            if response.status_code == 401:
-                error_detail = self._extract_error(response)
-                raise AuthenticationError(
-                    f"Authentication failed: {error_detail}"
-                )
-            elif response.status_code == 403:
-                error_detail = self._extract_error(response)
-                raise AuthorizationError(
-                    f"Authorization failed: {error_detail}"
-                )
-            elif response.status_code == 400:
-                error_detail = self._extract_error(response)
-                raise ValidationError(
-                    f"Validation failed: {error_detail}"
-                )
-            elif response.status_code >= 500:
-                error_detail = self._extract_error(response)
+        # Create fresh client for THIS request's event loop
+        async with self._get_client() as client:
+            try:
+                logger.debug(f"{method} {path} params={params} json={json_data}")
                 
-                # Retry on server errors
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    json=json_data,
+                    params=params
+                )
+                
+                # Handle HTTP error responses
+                if response.status_code == 401:
+                    error_detail = self._extract_error(response)
+                    raise AuthenticationError(
+                        f"Authentication failed: {error_detail}"
+                    )
+                elif response.status_code == 403:
+                    error_detail = self._extract_error(response)
+                    raise AuthorizationError(
+                        f"Authorization failed: {error_detail}"
+                    )
+                elif response.status_code == 400:
+                    error_detail = self._extract_error(response)
+                    raise ValidationError(
+                        f"Validation failed: {error_detail}"
+                    )
+                elif response.status_code >= 500:
+                    error_detail = self._extract_error(response)
+                    
+                    # Retry on server errors
+                    if retry_count < self.config.max_retries:
+                        delay = self.config.retry_delay * (2 ** retry_count)
+                        await asyncio.sleep(delay)
+                        return await self._make_request(
+                            method, path, json_data, params, retry_count + 1
+                        )
+                    
+                    raise ServerError(
+                        f"Server error (status {response.status_code}): {error_detail}"
+                    )
+                elif response.status_code >= 400:
+                    error_detail = self._extract_error(response)
+                    raise ServerError(
+                        f"HTTP error {response.status_code}: {error_detail}"
+                    )
+                
+                # Parse successful response
+                try:
+                    return response.json()
+                except json.JSONDecodeError:
+                    return {"result": response.text}
+            
+            except httpx.TimeoutException as e:
+                # Retry on timeout
                 if retry_count < self.config.max_retries:
                     delay = self.config.retry_delay * (2 ** retry_count)
                     await asyncio.sleep(delay)
                     return await self._make_request(
                         method, path, json_data, params, retry_count + 1
                     )
-                
-                raise ServerError(
-                    f"Server error (status {response.status_code}): {error_detail}"
-                )
-            elif response.status_code >= 400:
-                error_detail = self._extract_error(response)
-                raise ServerError(
-                    f"HTTP error {response.status_code}: {error_detail}"
-                )
+                raise NetworkError(f"Request timeout: {str(e)}")
             
-            # Parse successful response
-            try:
-                return response.json()
-            except json.JSONDecodeError:
-                return {"result": response.text}
-        
-        except httpx.TimeoutException as e:
-            # Retry on timeout
-            if retry_count < self.config.max_retries:
-                delay = self.config.retry_delay * (2 ** retry_count)
-                await asyncio.sleep(delay)
-                return await self._make_request(
-                    method, path, json_data, params, retry_count + 1
-                )
-            raise NetworkError(f"Request timeout: {str(e)}")
-        
-        except httpx.NetworkError as e:
-            # Retry on network errors
-            if retry_count < self.config.max_retries:
-                delay = self.config.retry_delay * (2 ** retry_count)
-                await asyncio.sleep(delay)
-                return await self._make_request(
-                    method, path, json_data, params, retry_count + 1
-                )
-            raise NetworkError(f"Network error: {str(e)}")
-        
-        except (AuthenticationError, AuthorizationError, ValidationError) as e:
-            # Don't retry auth/validation errors
-            raise
+            except httpx.NetworkError as e:
+                # Retry on network errors
+                if retry_count < self.config.max_retries:
+                    delay = self.config.retry_delay * (2 ** retry_count)
+                    await asyncio.sleep(delay)
+                    return await self._make_request(
+                        method, path, json_data, params, retry_count + 1
+                    )
+                raise NetworkError(f"Network error: {str(e)}")
+            
+            except (AuthenticationError, AuthorizationError, ValidationError) as e:
+                # Don't retry auth/validation errors
+                raise
     
     def _extract_error(self, response: httpx.Response) -> str:
         """Extract error message from response."""
@@ -476,34 +490,34 @@ class MCPClient:
             AuthenticationError: If authentication fails
             NetworkError: On network failures
         """
-        await self._ensure_client()
-        
         url = f"{self.config.base_url}/stream/ndjson/"
         
-        try:
-            async with self._client.stream(
-                "GET",
-                url,
-                params={"channel": channel}
-            ) as response:
-                if response.status_code == 401:
-                    raise AuthenticationError("Authentication failed for streaming")
-                elif response.status_code >= 400:
-                    raise NetworkError(
-                        f"Failed to connect to stream: HTTP {response.status_code}"
-                    )
-                
-                async for line in response.aiter_lines():
-                    if not line or line.strip() == "":
-                        # Skip empty lines (heartbeats)
-                        continue
+        # Create a client for streaming - will be kept alive during iteration
+        async with self._get_client() as client:
+            try:
+                async with client.stream(
+                    "GET",
+                    url,
+                    params={"channel": channel}
+                ) as response:
+                    if response.status_code == 401:
+                        raise AuthenticationError("Authentication failed for streaming")
+                    elif response.status_code >= 400:
+                        raise NetworkError(
+                            f"Failed to connect to stream: HTTP {response.status_code}"
+                        )
                     
-                    try:
-                        event = json.loads(line)
-                        yield event
-                    except json.JSONDecodeError:
-                        # Skip malformed lines
-                        continue
-        
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Stream connection error: {str(e)}")
+                    async for line in response.aiter_lines():
+                        if not line or line.strip() == "":
+                            # Skip empty lines (heartbeats)
+                            continue
+                        
+                        try:
+                            event = json.loads(line)
+                            yield event
+                        except json.JSONDecodeError:
+                            # Skip malformed lines
+                            continue
+            
+            except httpx.NetworkError as e:
+                raise NetworkError(f"Stream connection error: {str(e)}")
