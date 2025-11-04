@@ -312,6 +312,14 @@ class MCPBigQueryClient:
             )
             for ds in datasets
         ]
+    
+    async def list_datasets(self) -> List[DatasetInfo]:
+        """Alias for get_datasets() for compatibility with tool registry.
+        
+        Returns:
+            List of DatasetInfo objects
+        """
+        return await self.get_datasets()
         
     async def get_tables(self, dataset_id: str) -> List[TableInfo]:
         """Get all tables in a dataset.
@@ -351,6 +359,17 @@ class MCPBigQueryClient:
             )
             for tbl in tables
         ]
+    
+    async def list_tables(self, dataset_id: str) -> List[TableInfo]:
+        """Alias for get_tables() for compatibility with tool registry.
+        
+        Args:
+            dataset_id: Dataset identifier
+            
+        Returns:
+            List of TableInfo objects
+        """
+        return await self.get_tables(dataset_id)
         
     async def get_table_schema(
         self,
