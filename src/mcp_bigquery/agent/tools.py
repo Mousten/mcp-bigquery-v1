@@ -70,7 +70,7 @@ class ToolRegistry:
                     "properties": {},
                     "required": []
                 },
-                handler=self.mcp_client.get_datasets
+                handler=self.mcp_client.list_datasets
             ),
             Tool(
                 name="list_tables",
@@ -89,7 +89,7 @@ class ToolRegistry:
                     },
                     "required": ["dataset_id"]
                 },
-                handler=self.mcp_client.get_tables
+                handler=self.mcp_client.list_tables
             ),
             Tool(
                 name="get_table_schema",

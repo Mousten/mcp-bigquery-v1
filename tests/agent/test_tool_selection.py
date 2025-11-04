@@ -22,14 +22,14 @@ def mock_mcp_client():
     """Create a mock MCP client."""
     client = AsyncMock()
     
-    # Mock get_datasets
-    client.get_datasets = AsyncMock(return_value=[
+    # Mock list_datasets
+    client.list_datasets = AsyncMock(return_value=[
         DatasetInfo(dataset_id="Analytics", project_id="test-project"),
         DatasetInfo(dataset_id="Sales", project_id="test-project"),
     ])
     
-    # Mock get_tables
-    client.get_tables = AsyncMock(return_value=[
+    # Mock list_tables
+    client.list_tables = AsyncMock(return_value=[
         TableInfo(table_id="users", dataset_id="Analytics"),
         TableInfo(table_id="events", dataset_id="Analytics"),
     ])
@@ -135,7 +135,7 @@ class TestToolExecutor:
         assert result["tool_name"] == "list_datasets"
         assert result["tool_call_id"] == "call_123"
         assert len(result["result"]) == 2
-        mock_mcp_client.get_datasets.assert_called_once()
+        mock_mcp_client.list_datasets.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_execute_list_tables(self, tool_executor, mock_mcp_client):
@@ -151,7 +151,7 @@ class TestToolExecutor:
         assert result["success"] is True
         assert result["tool_name"] == "list_tables"
         assert len(result["result"]) == 2
-        mock_mcp_client.get_tables.assert_called_once_with(dataset_id="Analytics")
+        mock_mcp_client.list_tables.assert_called_once_with(dataset_id="Analytics")
     
     @pytest.mark.asyncio
     async def test_execute_get_table_schema(self, tool_executor, mock_mcp_client):
@@ -297,7 +297,7 @@ class TestInsightsAgentWithToolSelection:
         
         assert response.success is True
         assert "datasets" in response.answer.lower() or "Analytics" in response.answer
-        mock_mcp_client.get_datasets.assert_called_once()
+        mock_mcp_client.list_datasets.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_list_tables_question(self, agent, mock_llm_provider, mock_mcp_client):
@@ -329,7 +329,7 @@ class TestInsightsAgentWithToolSelection:
         response = await agent.process_question(request)
         
         assert response.success is True
-        mock_mcp_client.get_tables.assert_called_once_with(dataset_id="Analytics")
+        mock_mcp_client.list_tables.assert_called_once_with(dataset_id="Analytics")
     
     @pytest.mark.asyncio
     async def test_get_schema_question(self, agent, mock_llm_provider, mock_mcp_client):
