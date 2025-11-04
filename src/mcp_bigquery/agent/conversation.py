@@ -359,6 +359,9 @@ class InsightsAgent:
             SQL generation result with query and metadata
         """
         try:
+            # Extract potential table references from the question
+            mentioned_tables = self._extract_table_references_from_question(question)
+            
             # Build system prompt
             system_prompt = self.prompt_builder.build_system_prompt(
                 allowed_datasets=context.allowed_datasets,
@@ -366,8 +369,11 @@ class InsightsAgent:
                 project_id=self.project_id
             )
             
-            # Get relevant schema information
-            schema_info = await self._get_relevant_schemas(context.allowed_datasets)
+            # Get relevant schema information (prioritize mentioned tables)
+            schema_info = await self._get_relevant_schemas(
+                context.allowed_datasets,
+                mentioned_tables=mentioned_tables
+            )
             
             # Format conversation history
             conversation_history = self.prompt_builder.format_conversation_history(
@@ -413,7 +419,22 @@ class InsightsAgent:
                     }
                 )
             
-            return self._parse_sql_generation(response.content or "")
+            sql_result = self._parse_sql_generation(response.content or "")
+            
+            # Validate table references in generated SQL
+            if sql_result.sql:
+                validation_result = await self._validate_sql_tables(
+                    sql_result.sql,
+                    context.allowed_datasets,
+                    context.allowed_tables
+                )
+                
+                if not validation_result["valid"]:
+                    # Add warning about invalid table references
+                    sql_result.warnings.append(validation_result["error"])
+                    logger.warning(f"SQL validation warning: {validation_result['error']}")
+            
+            return sql_result
             
         except LLMGenerationError as e:
             logger.error(f"LLM generation error: {e}")
@@ -526,9 +547,24 @@ class InsightsAgent:
         try:
             rows = results.get("rows", [])
             schema = results.get("schema", [])
+            row_count = len(rows)
             
+            # Provide clear, explicit messaging for empty results
             if not rows:
-                return "The query executed successfully but returned no results. This might mean there's no data matching your criteria, or the tables might be empty."
+                summary = "**Query Result:** ✅ The query executed successfully but returned 0 rows.\n\n"
+                summary += "**What this means:**\n"
+                summary += "- The query syntax is correct and the table exists\n"
+                summary += "- However, no data matches your query criteria\n\n"
+                summary += "**Possible reasons:**\n"
+                summary += "1. The table is empty or has no data yet\n"
+                summary += "2. Your filter conditions (WHERE clause) don't match any records\n"
+                summary += "3. Date ranges or other criteria are too restrictive\n"
+                summary += "4. There might be a join condition that eliminates all rows\n\n"
+                summary += "**Next steps:**\n"
+                summary += "- Try removing some filter conditions to see if data exists\n"
+                summary += "- Ask me to 'describe table <name>' to see schema and row count\n"
+                summary += "- Try a simpler query like 'SELECT * FROM table LIMIT 10'"
+                return summary
             
             # Prepare results preview (first 5 rows)
             preview_rows = rows[:5]
@@ -548,7 +584,7 @@ class InsightsAgent:
                 question=question,
                 sql_query=sql_query,
                 results_preview=results_preview,
-                row_count=len(rows),
+                row_count=row_count,
                 columns=columns
             )
             
@@ -569,6 +605,10 @@ class InsightsAgent:
             
             summary = response.content or "Here are the query results."
             
+            # Add context about total result size
+            if row_count > 5:
+                summary += f"\n\n*Note: Showing {row_count} total rows. Analysis based on first 5 rows.*"
+            
             # Cache response
             if self.enable_caching:
                 await self.kb.cache_llm_response(
@@ -583,7 +623,11 @@ class InsightsAgent:
             
         except Exception as e:
             logger.error(f"Summary generation error: {e}", exc_info=True)
-            return f"The query returned {len(results.get('rows', []))} rows. Review the data below for details."
+            row_count = len(results.get('rows', []))
+            if row_count == 0:
+                return "**Query Result:** ✅ The query executed successfully but returned 0 rows. No data matches your query criteria."
+            else:
+                return f"The query returned {row_count} rows. Review the data below for details."
     
     async def _generate_chart_suggestions(
         self,
@@ -765,16 +809,65 @@ class InsightsAgent:
         
         return suggestions
     
-    async def _get_relevant_schemas(self, allowed_datasets: Set[str]) -> str:
-        """Get schema information for allowed datasets.
+    async def _get_relevant_schemas(
+        self,
+        allowed_datasets: Set[str],
+        mentioned_tables: Optional[List[Tuple[Optional[str], str]]] = None
+    ) -> str:
+        """Get schema information for allowed datasets, prioritizing mentioned tables.
         
         Args:
             allowed_datasets: Set of dataset IDs
+            mentioned_tables: List of (dataset_id, table_id) tuples mentioned in question
             
         Returns:
             Formatted schema information
         """
         try:
+            schemas = []
+            
+            # First, fetch schemas for specifically mentioned tables
+            if mentioned_tables:
+                for dataset_id, table_id in mentioned_tables:
+                    try:
+                        # If dataset not specified, try to find it
+                        if not dataset_id:
+                            # Try each allowed dataset
+                            for ds in allowed_datasets:
+                                if ds == "*":
+                                    continue
+                                try:
+                                    schema_result = await self.mcp_client.get_table_schema(
+                                        dataset_id=ds,
+                                        table_id=table_id,
+                                        include_samples=False
+                                    )
+                                    schemas.append({
+                                        "table_name": f"{self.project_id}.{ds}.{table_id}",
+                                        "fields": schema_result.get("schema", [])
+                                    })
+                                    break  # Found it, stop searching
+                                except Exception:
+                                    continue
+                        else:
+                            # Dataset specified
+                            schema_result = await self.mcp_client.get_table_schema(
+                                dataset_id=dataset_id,
+                                table_id=table_id,
+                                include_samples=False
+                            )
+                            schemas.append({
+                                "table_name": f"{self.project_id}.{dataset_id}.{table_id}",
+                                "fields": schema_result.get("schema", [])
+                            })
+                    except Exception as e:
+                        logger.warning(f"Failed to get schema for {dataset_id}.{table_id}: {e}")
+            
+            # If we have enough schemas, return early
+            if len(schemas) >= 5:
+                return self.prompt_builder.format_schema_info(schemas)
+            
+            # Otherwise, fetch additional schemas from allowed datasets
             if not allowed_datasets or "*" in allowed_datasets:
                 # Get all datasets
                 datasets_result = await self.mcp_client.list_datasets()
@@ -785,20 +878,29 @@ class InsightsAgent:
             # Limit to first 3 datasets to avoid token limits
             datasets = datasets[:3]
             
-            schemas = []
             for dataset in datasets:
                 dataset_id = dataset.get("datasetId", "")
                 if not dataset_id:
                     continue
                 
+                # Skip if we already have enough schemas
+                if len(schemas) >= 10:
+                    break
+                
                 try:
                     # Get tables in dataset
                     tables_result = await self.mcp_client.list_tables(dataset_id)
-                    tables = tables_result.get("tables", [])[:5]  # Limit to 5 tables
+                    tables = tables_result.get("tables", [])
                     
-                    for table in tables:
+                    # Get schemas for tables we haven't fetched yet
+                    for table in tables[:5]:  # Limit per dataset
                         table_id = table.get("tableId", "")
                         if not table_id:
+                            continue
+                        
+                        # Skip if we already have this table's schema
+                        table_name = f"{self.project_id}.{dataset_id}.{table_id}"
+                        if any(s["table_name"] == table_name for s in schemas):
                             continue
                         
                         # Get table schema
@@ -809,13 +911,16 @@ class InsightsAgent:
                         )
                         
                         schemas.append({
-                            "table_name": f"{self.project_id}.{dataset_id}.{table_id}",
+                            "table_name": table_name,
                             "fields": schema_result.get("schema", [])
                         })
                         
                 except Exception as e:
                     logger.warning(f"Failed to get schema for {dataset_id}: {e}")
                     continue
+            
+            if not schemas:
+                return "Schema information is currently unavailable. Please specify table names explicitly."
             
             return self.prompt_builder.format_schema_info(schemas)
             
@@ -867,7 +972,7 @@ class InsightsAgent:
             "what datasets", "list datasets", "show datasets", "available datasets",
             "which datasets", "dataset list", "datasets do i have", "datasets can i access",
             "what data sets", "list data sets", "show data sets", "list all datasets",
-            "show all datasets", "all datasets"
+            "show all datasets", "all datasets", "show me datasets"
         ]
         if any(pattern in question_lower for pattern in dataset_patterns):
             return "datasets"
@@ -875,7 +980,9 @@ class InsightsAgent:
         # Table listing patterns
         table_patterns = [
             "what tables", "list tables", "show tables", "available tables",
-            "which tables", "table list", "tables in", "tables do i have"
+            "which tables", "table list", "tables in", "tables do i have",
+            "show me tables", "show me the tables", "list the tables",
+            "what are the tables", "tables are"
         ]
         if any(pattern in question_lower for pattern in table_patterns):
             return "tables"
@@ -972,38 +1079,93 @@ class InsightsAgent:
             Agent response with table information
         """
         try:
-            # Try to extract dataset name from question
+            # Try to extract dataset name from question (case-insensitive)
             dataset_id = None
+            question_lower = question.lower()
             
-            # Look for dataset names in the question
+            # Look for dataset names in the question (case-insensitive)
             for ds in context.allowed_datasets:
-                if ds in question.lower():
+                if ds == "*":
+                    continue
+                # Check both lowercase and original case
+                if ds.lower() in question_lower:
                     dataset_id = ds
                     break
             
-            # If not found, use the first allowed dataset
+            # Try to extract dataset name using patterns like "in <dataset>" or "dataset <name>"
+            if not dataset_id:
+                # Pattern: "in <dataset_name>"
+                in_pattern = re.search(r'\bin\s+(?:the\s+)?([a-zA-Z0-9_]+)(?:\s+dataset)?', question, re.IGNORECASE)
+                if in_pattern:
+                    potential_dataset = in_pattern.group(1)
+                    # Check if this matches any allowed dataset (case-insensitive)
+                    for ds in context.allowed_datasets:
+                        if ds != "*" and ds.lower() == potential_dataset.lower():
+                            dataset_id = ds
+                            break
+            
+            # If not found, check if user has access to only one dataset
             if not dataset_id and context.allowed_datasets:
-                if "*" not in context.allowed_datasets:
-                    dataset_id = list(context.allowed_datasets)[0]
+                non_wildcard_datasets = [ds for ds in context.allowed_datasets if ds != "*"]
+                if len(non_wildcard_datasets) == 1:
+                    dataset_id = non_wildcard_datasets[0]
+                elif len(non_wildcard_datasets) > 1:
+                    # Multiple datasets available, ask for clarification
+                    datasets_list = ", ".join(sorted(non_wildcard_datasets))
+                    return AgentResponse(
+                        success=False,
+                        error=f"Please specify which dataset you'd like to see tables for. Available datasets: {datasets_list}",
+                        error_type="validation",
+                        metadata={
+                            "available_datasets": list(non_wildcard_datasets),
+                            "suggestion": "Try asking: 'show me tables in the <dataset_name> dataset'"
+                        }
+                    )
             
             if not dataset_id:
-                return AgentResponse(
-                    success=False,
-                    error="Please specify which dataset you'd like to see tables for.",
-                    error_type="validation"
-                )
+                # Fetch available datasets to help user
+                try:
+                    datasets_result = await self.mcp_client.list_datasets()
+                    datasets = datasets_result.get("datasets", [])
+                    dataset_names = [d.get("datasetId", d.get("dataset_id", "")) for d in datasets]
+                    datasets_list = ", ".join(dataset_names) if dataset_names else "none"
+                    
+                    return AgentResponse(
+                        success=False,
+                        error=f"Please specify which dataset you'd like to see tables for. Available datasets: {datasets_list}",
+                        error_type="validation",
+                        metadata={
+                            "available_datasets": dataset_names,
+                            "suggestion": "Try asking: 'show me tables in the <dataset_name> dataset'"
+                        }
+                    )
+                except Exception:
+                    return AgentResponse(
+                        success=False,
+                        error="Please specify which dataset you'd like to see tables for.",
+                        error_type="validation"
+                    )
             
+            # List tables in the dataset
             tables_result = await self.mcp_client.list_tables(dataset_id)
             tables = tables_result.get("tables", [])
             
             if not tables:
-                answer = f"The dataset '{dataset_id}' has no tables or you don't have access to any tables in it."
+                # Provide helpful context
+                answer = f"The dataset '{dataset_id}' has no tables, or you don't have access to any tables in it.\n\n"
+                answer += "Possible reasons:\n"
+                answer += "1. The dataset is empty\n"
+                answer += "2. You don't have permission to view tables in this dataset\n"
+                answer += "3. The dataset name might be incorrect\n\n"
+                answer += "Try asking: 'what datasets do I have access to?' to see all available datasets."
             else:
                 table_names = [t.get("tableId", t.get("table_id", "")) for t in tables]
                 answer = f"Dataset '{dataset_id}' contains {len(tables)} table(s):\n\n"
                 for i, name in enumerate(table_names, 1):
                     answer += f"{i}. {name}\n"
-                answer += "\nYou can ask me to describe any of these tables or query their data."
+                answer += "\nYou can ask me to:\n"
+                answer += f"- Describe any table: 'describe table {dataset_id}.{table_names[0]}'\n"
+                answer += f"- Query the data: 'show me top 10 rows from {table_names[0]}'"
             
             return AgentResponse(
                 success=True,
@@ -1011,16 +1173,119 @@ class InsightsAgent:
                 metadata={
                     "metadata_type": "tables",
                     "dataset_id": dataset_id,
-                    "table_count": len(tables)
+                    "table_count": len(tables),
+                    "table_names": table_names if tables else []
                 }
             )
         except Exception as e:
             logger.error(f"Error listing tables: {e}", exc_info=True)
+            
+            # Provide more helpful error message
+            error_msg = f"I encountered an error while trying to list tables"
+            if "dataset_id" in locals() and dataset_id:
+                error_msg += f" in dataset '{dataset_id}'"
+            error_msg += f".\n\nError details: {str(e)}\n\n"
+            error_msg += "You can try:\n"
+            error_msg += "1. Checking if the dataset name is correct\n"
+            error_msg += "2. Asking 'what datasets do I have access to?'\n"
+            error_msg += "3. Verifying your permissions with your administrator"
+            
             return AgentResponse(
                 success=False,
-                error=f"Failed to retrieve tables: {str(e)}",
-                error_type="execution"
+                error=error_msg,
+                error_type="execution",
+                metadata={"error_details": str(e)}
             )
+    
+    def _extract_table_references_from_question(self, question: str) -> List[Tuple[Optional[str], str]]:
+        """Extract table references from user question.
+        
+        Args:
+            question: User's question
+            
+        Returns:
+            List of (dataset_id, table_id) tuples. dataset_id may be None.
+        """
+        references = []
+        
+        # Pattern 1: project.dataset.table or dataset.table
+        full_ref_pattern = r'(?:FROM|from|table|TABLE)\s+[`"]?([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)[`"]?'
+        matches = re.findall(full_ref_pattern, question)
+        for match in matches:
+            # match is (project, dataset, table) - we use dataset and table
+            references.append((match[1], match[2]))
+        
+        # Pattern 2: dataset.table
+        dataset_table_pattern = r'(?:FROM|from|table|TABLE)\s+[`"]?([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)[`"]?'
+        matches = re.findall(dataset_table_pattern, question)
+        for match in matches:
+            if (match[0], match[1]) not in references:
+                references.append((match[0], match[1]))
+        
+        # Pattern 3: Just table name (no dataset)
+        table_only_pattern = r'(?:FROM|from|table|TABLE)\s+[`"]?([a-zA-Z0-9_]+)[`"]?'
+        matches = re.findall(table_only_pattern, question)
+        for match in matches:
+            # Only add if not already found with a dataset
+            if not any(r[1] == match for r in references):
+                references.append((None, match))
+        
+        return references
+    
+    async def _validate_sql_tables(
+        self,
+        sql: str,
+        allowed_datasets: Set[str],
+        allowed_tables: Dict[str, Set[str]]
+    ) -> Dict[str, Any]:
+        """Validate that table references in SQL exist and are accessible.
+        
+        Args:
+            sql: SQL query to validate
+            allowed_datasets: User's allowed datasets
+            allowed_tables: User's allowed tables per dataset
+            
+        Returns:
+            Dict with "valid" bool and optional "error" message
+        """
+        try:
+            # Extract table references from SQL
+            pattern = r'(?:FROM|JOIN)\s+`?([a-zA-Z0-9_.-]+)`?'
+            matches = re.findall(pattern, sql, re.IGNORECASE)
+            
+            for table_ref in matches:
+                parts = table_ref.split('.')
+                
+                if len(parts) >= 2:
+                    # Has dataset.table or project.dataset.table
+                    dataset_id = parts[-2]
+                    table_id = parts[-1]
+                    
+                    # Check if user has access
+                    if "*" in allowed_datasets:
+                        continue  # User has access to all
+                    
+                    if dataset_id not in allowed_datasets:
+                        return {
+                            "valid": False,
+                            "error": f"Table '{table_ref}' references dataset '{dataset_id}' which you don't have access to. Available datasets: {', '.join(sorted(allowed_datasets))}"
+                        }
+                    
+                    # Check table access
+                    if dataset_id in allowed_tables:
+                        dataset_tables = allowed_tables[dataset_id]
+                        if "*" not in dataset_tables and table_id not in dataset_tables:
+                            return {
+                                "valid": False,
+                                "error": f"You don't have access to table '{table_id}' in dataset '{dataset_id}'"
+                            }
+            
+            return {"valid": True}
+            
+        except Exception as e:
+            logger.warning(f"Error validating SQL tables: {e}")
+            # Don't block on validation errors
+            return {"valid": True}
     
     async def _handle_schema_question(self, question: str, context: ConversationContext) -> AgentResponse:
         """Handle question about table schema.

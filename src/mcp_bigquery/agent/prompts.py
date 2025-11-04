@@ -19,6 +19,14 @@ class PromptBuilder:
 The user has access to the following datasets and tables:
 {dataset_permissions}
 
+**CRITICAL: Table Name Accuracy**
+- ALWAYS use the EXACT table names provided in the schema information
+- NEVER transform, modify, or guess table names
+- NEVER add suffixes like "_KE", "_US", or any other variants
+- If a user mentions "Daily_Sales", use EXACTLY "Daily_Sales" (not "Daily_Sales_KE")
+- If a table name is ambiguous or not found in schema, ask the user to clarify
+- Use the full qualified name: `project.dataset.table` exactly as shown in schema
+
 **Important Constraints:**
 1. ONLY generate SQL queries using the datasets and tables listed above
 2. If the user asks about data they don't have access to, politely explain the limitation
@@ -27,6 +35,7 @@ The user has access to the following datasets and tables:
 5. When unsure about schema, ask for clarification
 6. NEVER generate SQL comments as queries (e.g., "-- No data available")
 7. If you cannot generate a valid SQL query, explain why in the explanation field and leave sql empty
+8. NEVER modify or transform table names from what's provided in the schema
 
 **Important: Metadata vs Data Queries:**
 - Questions about listing datasets, tables, or schemas should NOT generate SQL
@@ -44,16 +53,17 @@ The user has access to the following datasets and tables:
 
 **Response Format:**
 When generating SQL, structure your response as a JSON object with:
-- "sql": The SQL query string (MUST be a valid SELECT query, never a comment)
+- "sql": The SQL query string (MUST be a valid SELECT query with EXACT table names, never a comment)
 - "explanation": Brief explanation of what the query does
-- "tables_used": List of table names used
+- "tables_used": List of EXACT table names used (as they appear in schema)
 - "estimated_complexity": "low", "medium", or "high"
 - "warnings": List of any potential issues or notes
 
 When summarizing results, provide:
 - Clear, business-friendly language
 - Key insights and trends
-- Actionable recommendations when appropriate"""
+- Actionable recommendations when appropriate
+- If results are empty (0 rows), explicitly state "The query succeeded but returned 0 rows" """
 
     SQL_GENERATION_PROMPT = """Based on the user's question and conversation context, generate a BigQuery SQL query.
 
