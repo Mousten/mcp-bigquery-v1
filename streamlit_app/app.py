@@ -1,4 +1,9 @@
 """Main Streamlit application for BigQuery Insights."""
+from dotenv import load_dotenv
+
+# Load .env file BEFORE anything else to ensure environment variables are available
+load_dotenv()
+
 import streamlit as st
 import asyncio
 import logging
@@ -178,10 +183,10 @@ def get_conversation_manager(config: StreamlitConfig, _user_context: Any):
     )
     mcp_client = MCPClient(mcp_config)
     
-    # Initialize Supabase knowledge base
+    # Initialize Supabase knowledge base with service key for RLS bypass
     kb = SupabaseKnowledgeBase(
         supabase_url=config.supabase_url,
-        supabase_key=config.supabase_key
+        supabase_key=config.supabase_service_key or config.supabase_key
     )
     
     # Determine API key based on provider
@@ -224,10 +229,10 @@ def get_user_context(user_id: str, access_token: str, config: StreamlitConfig) -
         from mcp_bigquery.core.auth import UserContext
         from mcp_bigquery.core.supabase_client import SupabaseKnowledgeBase
         
-        # Initialize Supabase knowledge base
+        # Initialize Supabase knowledge base with service key for RLS bypass
         kb = SupabaseKnowledgeBase(
             supabase_url=config.supabase_url,
-            supabase_key=config.supabase_key
+            supabase_key=config.supabase_service_key or config.supabase_key
         )
         
         # Create user context from token

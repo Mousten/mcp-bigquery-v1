@@ -31,7 +31,9 @@ def client_config():
 @pytest.fixture
 def mock_http_client():
     """Create a mock HTTP client."""
-    return AsyncMock(spec=httpx.AsyncClient)
+    mock = AsyncMock(spec=httpx.AsyncClient)
+    mock.is_closed = False
+    return mock
 
 
 class TestMCPClientInitialization:

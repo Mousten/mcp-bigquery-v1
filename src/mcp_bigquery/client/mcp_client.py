@@ -55,8 +55,8 @@ class MCPClient:
         await self.close()
     
     async def _ensure_client(self):
-        """Ensure HTTP client is initialized."""
-        if self._client is None:
+        """Ensure HTTP client is initialized and not closed."""
+        if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=self.config.timeout,
                 verify=self.config.verify_ssl,
