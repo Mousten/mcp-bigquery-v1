@@ -229,7 +229,7 @@ class TestChatMessages:
         messages = [
             {
                 "id": str(uuid4()),
-                "chat_session_id": session_id,
+                "session_id": session_id,
                 "user_id": "user-123",
                 "role": "user" if i % 2 == 0 else "assistant",
                 "content": f"Message {i}",
@@ -246,8 +246,8 @@ class TestChatMessages:
         result = await supabase_kb.get_chat_messages(session_id=session_id, limit=10)
         
         assert len(result) == 5
-        assert all(m["chat_session_id"] == session_id for m in result)
-        mock_supabase.eq.assert_called_with("chat_session_id", session_id)
+        assert all(m["session_id"] == session_id for m in result)
+        mock_supabase.eq.assert_called_with("session_id", session_id)
         mock_supabase.order.assert_called_with("created_at", desc=False)
     
     @pytest.mark.asyncio
@@ -264,7 +264,7 @@ class TestChatMessages:
         }]
         messages = [{
             "id": str(uuid4()),
-            "chat_session_id": session_id,
+            "session_id": session_id,
             "user_id": "user-123",
             "role": "user",
             "content": "Hello!",

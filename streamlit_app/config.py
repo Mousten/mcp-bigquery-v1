@@ -12,6 +12,7 @@ class StreamlitConfig(BaseSettings):
         MCP_BASE_URL: Base URL of the MCP server (default: http://localhost:8000)
         SUPABASE_URL: Supabase project URL (required)
         SUPABASE_KEY: Supabase anonymous key (required)
+        SUPABASE_SERVICE_KEY: Supabase service role key for RLS bypass (optional)
         SUPABASE_JWT_SECRET: JWT secret for token validation (required)
         PROJECT_ID: Google Cloud project ID (required)
         LLM_PROVIDER: LLM provider type (openai, anthropic, gemini) (default: openai)
@@ -41,6 +42,7 @@ class StreamlitConfig(BaseSettings):
     # Supabase Configuration
     supabase_url: str = Field(..., description="Supabase project URL")
     supabase_key: str = Field(..., description="Supabase anonymous key")
+    supabase_service_key: Optional[str] = Field(default=None, description="Supabase service role key for RLS bypass")
     supabase_jwt_secret: str = Field(..., description="JWT secret for token validation")
     
     # BigQuery Configuration

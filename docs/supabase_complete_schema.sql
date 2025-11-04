@@ -328,6 +328,12 @@ CREATE POLICY metadata_cache_select_policy ON metadata_cache
 CREATE POLICY user_usage_stats_select_policy ON user_usage_stats
     FOR SELECT USING (auth.uid()::text = user_id);
 
+CREATE POLICY user_usage_stats_insert_policy ON user_usage_stats
+    FOR INSERT WITH CHECK (auth.uid()::text = user_id);
+
+CREATE POLICY user_usage_stats_update_policy ON user_usage_stats
+    FOR UPDATE USING (auth.uid()::text = user_id);
+
 -- User Preferences Policies
 CREATE POLICY user_preferences_select_policy ON user_preferences
     FOR SELECT USING (auth.uid()::text = user_id);
@@ -352,7 +358,7 @@ GRANT ALL ON chat_sessions TO authenticated;
 GRANT ALL ON chat_messages TO authenticated;
 GRANT ALL ON query_cache TO authenticated;
 GRANT SELECT ON metadata_cache TO authenticated;
-GRANT SELECT ON user_usage_stats TO authenticated;
+GRANT ALL ON user_usage_stats TO authenticated;
 GRANT ALL ON user_preferences TO authenticated;
 
 -- ========================================
