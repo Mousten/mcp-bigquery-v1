@@ -389,15 +389,21 @@ class InsightsAgent:
                     response
                 )
                 
-                # Add assistant message with tool calls
-                if response.content:
-                    messages.append(Message(role="assistant", content=response.content))
+                # CRITICAL: Add assistant message with tool_calls
+                # This is required by OpenAI API before tool result messages
+                messages.append(Message(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls
+                ))
                 
                 # Add tool results
                 messages.extend(tool_result_messages)
                 
                 # Get final response from LLM
                 logger.info("Sending tool results back to LLM for final response")
+                logger.debug(f"Messages being sent to LLM: {len(messages)} messages")
+                logger.debug(f"Last 3 messages: assistant with {len(response.tool_calls)} tool_calls, then {len(tool_result_messages)} tool results")
                 final_response = await self.llm.generate(messages=messages)
                 answer = final_response.content or "I processed your request."
                 
@@ -554,10 +560,11 @@ Be helpful, accurate, and explain your reasoning when appropriate."""
             else:
                 content = f"Error: {result['error']}"
             
-            # Add as tool message
+            # Add as tool message with tool_call_id
             messages.append(Message(
                 role="tool",
-                content=content
+                content=content,
+                tool_call_id=result["tool_call_id"]
             ))
         
         return messages

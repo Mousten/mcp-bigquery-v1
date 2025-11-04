@@ -28,8 +28,10 @@ class LLMGenerationError(LLMProviderError):
 class Message(BaseModel):
     """Standard message format for LLM interactions."""
     role: str
-    content: str
+    content: Optional[str] = None
     name: Optional[str] = None
+    tool_calls: Optional[List['ToolCall']] = None
+    tool_call_id: Optional[str] = None
     
     @field_validator('role')
     @classmethod

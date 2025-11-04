@@ -84,10 +84,33 @@ class OpenAIProvider(LLMProvider):
             LLMGenerationError: If generation fails
         """
         try:
-            openai_messages = [
-                {"role": msg.role, "content": msg.content}
-                for msg in messages
-            ]
+            openai_messages = []
+            for msg in messages:
+                openai_msg: Dict[str, Any] = {
+                    "role": msg.role,
+                    "content": msg.content
+                }
+                
+                # Add tool_calls for assistant messages
+                if msg.role == "assistant" and msg.tool_calls:
+                    import json
+                    openai_msg["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments)
+                            }
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                
+                # Add tool_call_id for tool messages
+                if msg.role == "tool" and msg.tool_call_id:
+                    openai_msg["tool_call_id"] = msg.tool_call_id
+                
+                openai_messages.append(openai_msg)
             
             request_params: Dict[str, Any] = {
                 "model": self.config.model,
