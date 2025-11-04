@@ -23,6 +23,8 @@ from .summarizer import (
     DataSummary,
     ColumnStatistics,
 )
+from .tools import Tool, ToolRegistry
+from .tool_executor import ToolExecutor
 
 __all__ = [
     "InsightsAgent",
@@ -43,4 +45,7 @@ __all__ = [
     "ResultSummarizer",
     "DataSummary",
     "ColumnStatistics",
+    "Tool",
+    "ToolRegistry",
+    "ToolExecutor",
 ]

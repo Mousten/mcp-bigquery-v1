@@ -28,6 +28,7 @@ def mock_llm_provider():
     provider.config.model = "gpt-4"
     provider.generate = AsyncMock()
     provider.count_tokens = MagicMock(return_value=100)
+    provider.supports_functions = MagicMock(return_value=False)  # Disable tool selection for these tests
     return provider
 
 
