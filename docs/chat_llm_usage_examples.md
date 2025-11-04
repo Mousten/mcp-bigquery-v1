@@ -309,16 +309,16 @@ CREATE INDEX idx_chat_sessions_updated_at ON chat_sessions(updated_at DESC);
 ```sql
 CREATE TABLE chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    chat_session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL REFERENCES user_profiles(user_id),
+    session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,  -- 'user', 'assistant', 'system'
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    metadata JSONB
+    metadata JSONB,
+    ordering INTEGER NOT NULL
 );
 
-CREATE INDEX idx_chat_messages_session_id ON chat_messages(chat_session_id);
-CREATE INDEX idx_chat_messages_created_at ON chat_messages(created_at);
+CREATE INDEX idx_chat_messages_session_id ON chat_messages(session_id);
+CREATE INDEX idx_chat_messages_ordering ON chat_messages(session_id, ordering);
 ```
 
 ### llm_response_cache

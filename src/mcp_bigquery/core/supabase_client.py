@@ -824,12 +824,12 @@ class SupabaseKnowledgeBase:
         
         Expected table schema for chat_messages:
         - id: uuid (primary key)
-        - chat_session_id: uuid (foreign key to chat_sessions)
-        - user_id: text (foreign key to user_profiles)
+        - session_id: uuid (foreign key to chat_sessions)
         - role: text (e.g., 'user', 'assistant', 'system')
         - content: text
         - created_at: timestamptz (auto)
         - metadata: jsonb (nullable)
+        - ordering: integer
         
         Args:
             session_id: Chat session ID
@@ -848,12 +848,24 @@ class SupabaseKnowledgeBase:
             return None
         
         try:
+            # Get current message count to determine ordering
+            count_result = self.supabase.table("chat_messages") \
+                .select("ordering", count="exact") \
+                .eq("session_id", session_id) \
+                .order("ordering", desc=True) \
+                .limit(1) \
+                .execute()
+            
+            ordering = 0
+            if count_result.data:
+                ordering = count_result.data[0]["ordering"] + 1
+            
             message_data = {
-                "chat_session_id": session_id,
-                "user_id": user_id,
+                "session_id": session_id,
                 "role": role,
                 "content": content,
-                "metadata": metadata or {}
+                "metadata": metadata or {},
+                "ordering": ordering
             }
             
             result = self.supabase.table("chat_messages").insert(message_data).execute()
@@ -912,7 +924,7 @@ class SupabaseKnowledgeBase:
         try:
             query = self.supabase.table("chat_messages") \
                 .select("*") \
-                .eq("chat_session_id", session_id) \
+                .eq("session_id", session_id) \
                 .order("created_at", desc=False) \
                 .limit(limit) \
                 .offset(offset)
