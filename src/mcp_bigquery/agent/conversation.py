@@ -25,6 +25,9 @@ from .models import (
     ConversationContext,
 )
 from .prompts import PromptBuilder
+from .tools import ToolRegistry
+from .tool_executor import ToolExecutor
+from .mcp_client import MCPBigQueryClient
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +72,8 @@ class InsightsAgent:
         kb: SupabaseKnowledgeBase,
         project_id: str,
         max_retries: int = 2,
-        enable_caching: bool = True
+        enable_caching: bool = True,
+        enable_tool_selection: bool = True
     ):
         """Initialize the insights agent.
         
@@ -80,6 +84,7 @@ class InsightsAgent:
             project_id: Google Cloud project ID
             max_retries: Maximum retries for failed operations
             enable_caching: Whether to cache LLM responses
+            enable_tool_selection: Whether to use LLM-based tool selection (default: True)
         """
         self.llm = llm_provider
         self.mcp_client = mcp_client
@@ -87,7 +92,22 @@ class InsightsAgent:
         self.project_id = project_id
         self.max_retries = max_retries
         self.enable_caching = enable_caching
+        self.enable_tool_selection = enable_tool_selection
         self.prompt_builder = PromptBuilder()
+        
+        # Initialize tool selection infrastructure if enabled
+        if self.enable_tool_selection and self.llm.supports_functions():
+            # Create a wrapper MCP client from the agent's mcp_client
+            # The agent's mcp_client is MCPClient, but we need MCPBigQueryClient for tools
+            # Since they have the same interface, we'll use the mcp_client directly
+            self.tool_registry = ToolRegistry(self.mcp_client)
+            self.tool_executor = ToolExecutor(self.tool_registry)
+            logger.info(f"Tool selection enabled with {len(self.tool_registry.get_all_tools())} tools")
+        else:
+            self.tool_registry = None
+            self.tool_executor = None
+            if self.enable_tool_selection:
+                logger.warning(f"Tool selection requested but LLM provider {self.llm.provider_name} doesn't support functions")
     
     async def process_question(self, request: AgentRequest) -> AgentResponse:
         """Process a user question and return insights.
@@ -117,6 +137,11 @@ class InsightsAgent:
                 metadata={"request_metadata": request.metadata}
             )
             
+            # Use tool selection if enabled
+            if self.enable_tool_selection and self.tool_registry:
+                return await self._process_with_tool_selection(request, context)
+            
+            # Fallback to pattern-based routing
             # Step 2: Check if this is a metadata question (datasets/tables/schema)
             metadata_type = self._is_metadata_question(request.question)
             if metadata_type:
@@ -309,6 +334,301 @@ class InsightsAgent:
                 logger.error(f"Failed to save error message: {save_error}")
             
             return error_response
+    
+    async def _process_with_tool_selection(
+        self,
+        request: AgentRequest,
+        context: ConversationContext
+    ) -> AgentResponse:
+        """Process question using LLM-based tool selection.
+        
+        Args:
+            request: Agent request with question and context
+            context: Conversation context
+            
+        Returns:
+            Agent response with answer and results
+        """
+        try:
+            logger.info(f"Processing with tool selection: {request.question}")
+            
+            # Build system prompt for tool-based interaction
+            system_prompt = self._build_tool_selection_system_prompt(context)
+            
+            # Build messages
+            messages = [Message(role="system", content=system_prompt)]
+            
+            # Add conversation history
+            for msg in context.messages[-10:]:  # Last 5 turns (10 messages)
+                messages.append(Message(
+                    role=msg.get("role", "user"),
+                    content=msg.get("content", "")
+                ))
+            
+            # Add current question
+            messages.append(Message(role="user", content=request.question))
+            
+            # Get tools for the LLM provider
+            tools = self.tool_registry.get_tools_for_llm(self.llm.provider_name)
+            
+            logger.info(f"Calling LLM with {len(tools)} tools available")
+            
+            # Call LLM with tools
+            response = await self.llm.generate(messages=messages, tools=tools)
+            
+            # Check if LLM wants to call tools
+            if response.has_tool_calls():
+                logger.info(f"LLM requested {len(response.tool_calls)} tool call(s)")
+                
+                # Execute tool calls
+                tool_results = await self.tool_executor.execute_tool_calls(response.tool_calls)
+                
+                # Format tool results for the LLM
+                tool_result_messages = self._format_tool_results_for_llm(
+                    tool_results,
+                    response
+                )
+                
+                # Add assistant message with tool calls
+                if response.content:
+                    messages.append(Message(role="assistant", content=response.content))
+                
+                # Add tool results
+                messages.extend(tool_result_messages)
+                
+                # Get final response from LLM
+                logger.info("Sending tool results back to LLM for final response")
+                final_response = await self.llm.generate(messages=messages)
+                answer = final_response.content or "I processed your request."
+                
+                # Build response based on tool results
+                agent_response = self._build_response_from_tool_results(
+                    answer=answer,
+                    tool_results=tool_results,
+                    request=request
+                )
+                
+            else:
+                # LLM provided direct answer without tools
+                logger.info("LLM provided direct answer without tool calls")
+                answer = response.content or "I don't have enough information to answer that."
+                
+                agent_response = AgentResponse(
+                    success=True,
+                    answer=answer,
+                    metadata={
+                        "llm_provider": self.llm.provider_name,
+                        "llm_model": self.llm.config.model,
+                        "tool_calls": 0
+                    }
+                )
+            
+            # Save assistant response
+            await self._save_message(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                role="assistant",
+                content=agent_response.answer or agent_response.error or "",
+                metadata=agent_response.metadata or {}
+            )
+            
+            return agent_response
+            
+        except Exception as e:
+            logger.error(f"Tool selection processing error: {e}", exc_info=True)
+            error_response = AgentResponse(
+                success=False,
+                error=f"An error occurred: {str(e)}",
+                error_type="unknown"
+            )
+            
+            # Try to save error message
+            try:
+                await self._save_message(
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    role="assistant",
+                    content=error_response.error,
+                    metadata={"error": True, "error_type": "unknown"}
+                )
+            except Exception as save_error:
+                logger.error(f"Failed to save error message: {save_error}")
+            
+            return error_response
+    
+    def _build_tool_selection_system_prompt(self, context: ConversationContext) -> str:
+        """Build system prompt for tool-based interaction.
+        
+        Args:
+            context: Conversation context
+            
+        Returns:
+            System prompt describing tools and how to use them
+        """
+        datasets_str = ", ".join(sorted(context.allowed_datasets)) if context.allowed_datasets and "*" not in context.allowed_datasets else "all datasets"
+        
+        return f"""You are a helpful BigQuery assistant. You help users explore and query their BigQuery data.
+
+You have access to these tools to interact with BigQuery:
+
+1. **list_datasets()** - List all datasets the user has access to
+   - Use when: User asks about available datasets or what data they have
+   - Examples: "what datasets do I have?", "show me my datasets"
+
+2. **list_tables(dataset_id)** - List all tables in a specific dataset
+   - Use when: User asks about tables in a dataset
+   - Examples: "what tables are in Analytics?", "show tables in dataset X"
+
+3. **get_table_schema(dataset_id, table_id)** - Get schema (columns and types) for a table
+   - Use when: User asks about table structure, columns, or wants to understand the data
+   - Examples: "describe the Sales table", "what columns does X have?", "show me the schema"
+
+4. **execute_sql(sql)** - Execute a SQL query to retrieve actual data
+   - Use when: User wants to see data, analyze values, or run queries
+   - IMPORTANT: Always verify table names using list_tables first before writing SQL
+   - Examples: "show me top 10 rows", "what's the total revenue?", "query the data"
+
+DECISION LOGIC:
+- For questions about datasets → use list_datasets
+- For questions about tables in a dataset → use list_tables (ask for dataset if not specified)
+- For questions about table structure/columns → use get_table_schema
+- For questions requesting actual data → first verify tables exist with list_tables, then generate SQL and use execute_sql
+
+IMPORTANT RULES:
+- NEVER guess or hallucinate table names - always call list_tables first
+- NEVER guess column names - always call get_table_schema first
+- Always verify resources exist before generating SQL queries
+- Provide clear, friendly explanations to users
+- If you need more information (like a dataset or table name), ask the user
+
+User has access to: {datasets_str}
+Project ID: {self.project_id}
+
+Be helpful, accurate, and explain your reasoning when appropriate."""
+    
+    def _format_tool_results_for_llm(
+        self,
+        tool_results: List[Dict[str, Any]],
+        llm_response: GenerationResponse
+    ) -> List[Message]:
+        """Format tool results as messages for the LLM.
+        
+        Args:
+            tool_results: Results from tool execution
+            llm_response: Original LLM response with tool calls
+            
+        Returns:
+            List of messages representing tool results
+        """
+        messages = []
+        
+        for result in tool_results:
+            # Format the result content
+            if result["success"]:
+                # Convert result to readable format
+                result_data = result["result"]
+                
+                # Handle different result types
+                if isinstance(result_data, list):
+                    if result["tool_name"] == "list_datasets":
+                        # Format datasets
+                        datasets = [d.dataset_id if hasattr(d, 'dataset_id') else str(d) for d in result_data]
+                        content = f"Found {len(datasets)} dataset(s): {', '.join(datasets)}"
+                    elif result["tool_name"] == "list_tables":
+                        # Format tables
+                        tables = [t.table_id if hasattr(t, 'table_id') else str(t) for t in result_data]
+                        content = f"Found {len(tables)} table(s): {', '.join(tables)}"
+                    else:
+                        content = json.dumps(result_data, default=str, indent=2)
+                elif hasattr(result_data, 'schema_fields'):
+                    # Table schema
+                    content = f"Table schema with {len(result_data.schema_fields)} columns:\n{json.dumps(result_data.schema_fields, indent=2)}"
+                elif hasattr(result_data, 'rows'):
+                    # Query result
+                    row_count = len(result_data.rows)
+                    content = f"Query returned {row_count} row(s):\n{json.dumps(result_data.rows[:10], default=str, indent=2)}"
+                    if row_count > 10:
+                        content += f"\n... and {row_count - 10} more rows"
+                else:
+                    content = json.dumps(result_data, default=str, indent=2)
+            else:
+                content = f"Error: {result['error']}"
+            
+            # Add as tool message
+            messages.append(Message(
+                role="tool",
+                content=content
+            ))
+        
+        return messages
+    
+    def _build_response_from_tool_results(
+        self,
+        answer: str,
+        tool_results: List[Dict[str, Any]],
+        request: AgentRequest
+    ) -> AgentResponse:
+        """Build agent response from tool execution results.
+        
+        Args:
+            answer: Final answer from LLM
+            tool_results: Results from tool execution
+            request: Original request
+            
+        Returns:
+            Agent response
+        """
+        # Check if any tool was execute_sql
+        sql_result = None
+        sql_query = None
+        query_results = None
+        
+        for result in tool_results:
+            if result["tool_name"] == "execute_sql" and result["success"]:
+                # The result is a QueryResult object, not a dict
+                result_obj = result["result"]
+                
+                # Extract SQL from the tool call arguments (not from result)
+                # We need to get it from the original tool call
+                sql_query = None  # Will be populated from tool call args if available
+                
+                # Convert QueryResult to dict format for response
+                if hasattr(result_obj, 'rows'):
+                    query_results = {
+                        "rows": result_obj.rows,
+                        "statistics": result_obj.statistics if hasattr(result_obj, 'statistics') else None,
+                        "cached": result_obj.cached if hasattr(result_obj, 'cached') else False
+                    }
+                else:
+                    query_results = result_obj
+                    
+                sql_result = result
+                break
+        
+        # Build response
+        metadata = {
+            "llm_provider": self.llm.provider_name,
+            "llm_model": self.llm.config.model,
+            "tool_calls": len(tool_results),
+            "tools_used": [r["tool_name"] for r in tool_results]
+        }
+        
+        if sql_result:
+            # Data query was executed
+            return AgentResponse(
+                success=True,
+                answer=answer,
+                sql_query=sql_query,
+                results=query_results,
+                metadata=metadata
+            )
+        else:
+            # Metadata query (datasets/tables/schema)
+            return AgentResponse(
+                success=True,
+                answer=answer,
+                metadata=metadata
+            )
     
     async def _get_conversation_context(
         self,
