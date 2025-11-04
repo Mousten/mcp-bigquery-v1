@@ -70,6 +70,9 @@ class ToolExecutor:
         Returns:
             Dict with tool_call_id, tool_name, success, and result/error
         """
+        tool_name = None
+        call_id = None
+        
         try:
             tool_name = tool_call.name
             arguments = tool_call.arguments
@@ -81,6 +84,11 @@ class ToolExecutor:
             tool = self.registry.get_tool_by_name(tool_name)
             if not tool:
                 raise ValueError(f"Unknown tool: {tool_name}")
+            
+            # Ensure handler is a coroutine function
+            import asyncio
+            if not asyncio.iscoroutinefunction(tool.handler):
+                raise ValueError(f"Tool handler for {tool_name} is not async")
             
             # Execute tool handler
             result = await tool.handler(**arguments)
@@ -95,10 +103,12 @@ class ToolExecutor:
             }
             
         except Exception as e:
-            logger.error(f"Tool execution failed: {tool_name if 'tool_name' in locals() else 'unknown'}: {e}")
+            logger.error(f"Tool execution failed: {tool_name if tool_name else 'unknown'}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
-                "tool_call_id": call_id if 'call_id' in locals() else None,
-                "tool_name": tool_name if 'tool_name' in locals() else "unknown",
+                "tool_call_id": call_id,
+                "tool_name": tool_name if tool_name else "unknown",
                 "success": False,
                 "error": str(e)
             }
