@@ -87,11 +87,42 @@ class AnthropicProvider(LLMProvider):
             for msg in messages:
                 if msg.role == "system":
                     system_message = msg.content
+                elif msg.role == "tool":
+                    # Anthropic requires tool results in specific format
+                    anthropic_messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": msg.tool_call_id,
+                                "content": msg.content or ""
+                            }
+                        ]
+                    })
+                elif msg.role == "assistant" and msg.tool_calls:
+                    # Assistant message with tool calls
+                    content_blocks = []
+                    if msg.content:
+                        content_blocks.append({
+                            "type": "text",
+                            "text": msg.content
+                        })
+                    for tc in msg.tool_calls:
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments
+                        })
+                    anthropic_messages.append({
+                        "role": "assistant",
+                        "content": content_blocks
+                    })
                 else:
-                    role = "user" if msg.role in ("user", "function", "tool") else "assistant"
+                    role = "user" if msg.role in ("user", "function") else "assistant"
                     anthropic_messages.append({
                         "role": role,
-                        "content": msg.content,
+                        "content": msg.content or "",
                     })
             
             request_params: Dict[str, Any] = {
