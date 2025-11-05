@@ -1,5 +1,6 @@
 """Conversational agent for BigQuery insights using LLMs and MCP client."""
 
+import hashlib
 import json
 import logging
 import re
@@ -108,6 +109,34 @@ class InsightsAgent:
             self.tool_executor = None
             if self.enable_tool_selection:
                 logger.warning(f"Tool selection requested but LLM provider {self.llm.provider_name} doesn't support functions")
+    
+    def _deduplicate_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Deduplicate messages by content hash to prevent duplicate history.
+        
+        Args:
+            messages: List of message dicts
+            
+        Returns:
+            Deduplicated list of messages
+        """
+        seen_hashes = set()
+        deduplicated = []
+        
+        for msg in messages:
+            # Create hash from role and content
+            msg_str = json.dumps({
+                "role": msg.get("role", ""),
+                "content": msg.get("content", "")
+            }, sort_keys=True)
+            msg_hash = hashlib.md5(msg_str.encode()).hexdigest()
+            
+            if msg_hash not in seen_hashes:
+                deduplicated.append(msg)
+                seen_hashes.add(msg_hash)
+            else:
+                logger.debug(f"Skipping duplicate message: {msg.get('role')} - {msg.get('content', '')[:50]}...")
+        
+        return deduplicated
     
     async def process_question(self, request: AgentRequest) -> AgentResponse:
         """Process a user question and return insights.
@@ -351,22 +380,31 @@ class InsightsAgent:
         """
         try:
             logger.info(f"Processing with tool selection: {request.question}")
+            logger.info(f"Building messages for question: {request.question}")
+            logger.info(f"History length: {len(context.messages)} messages")
             
             # Build system prompt for tool-based interaction
             system_prompt = self._build_tool_selection_system_prompt(context)
             
+            # Deduplicate context messages to prevent duplicate history
+            deduplicated_context = self._deduplicate_messages(context.messages)
+            logger.info(f"After deduplication: {len(deduplicated_context)} messages (removed {len(context.messages) - len(deduplicated_context)} duplicates)")
+            
             # Build messages
             messages = [Message(role="system", content=system_prompt)]
             
-            # Add conversation history
-            for msg in context.messages[-10:]:  # Last 5 turns (10 messages)
+            # Add conversation history (last 10 messages)
+            for msg in deduplicated_context[-10:]:
                 messages.append(Message(
                     role=msg.get("role", "user"),
                     content=msg.get("content", "")
                 ))
             
-            # Add current question
-            messages.append(Message(role="user", content=request.question))
+            # Add current question (only if it's not already in the last message)
+            if not deduplicated_context or deduplicated_context[-1].get("content") != request.question:
+                messages.append(Message(role="user", content=request.question))
+            else:
+                logger.debug("Current question already in context, not adding duplicate")
             
             # Get tools for the LLM provider
             tools = self.tool_registry.get_tools_for_llm(self.llm.provider_name)
@@ -375,6 +413,12 @@ class InsightsAgent:
             
             # Call LLM with tools
             response = await self.llm.generate(messages=messages, tools=tools)
+            
+            # Log LLM response details
+            logger.info(f"LLM response: has_tool_calls={response.has_tool_calls()}, content_length={len(response.content or '')}")
+            if not response.has_tool_calls() and response.content:
+                # Log first 200 chars of response to see if it's narrating
+                logger.warning(f"LLM responded with text instead of tool calls: {response.content[:200]}")
             
             # Check if LLM wants to call tools
             if response.has_tool_calls():
@@ -494,10 +538,20 @@ You have access to these tools to interact with BigQuery:
    - IMPORTANT: Always verify table names using list_tables first before writing SQL
    - Examples: "show me top 10 rows", "what's the total revenue?", "query the data"
 
+CRITICAL - HOW TO USE TOOLS:
+❌ WRONG: "I will check the schema of this table..." (talking about what you'll do)
+✅ RIGHT: Call get_table_schema tool IMMEDIATELY without narration
+
+❌ WRONG: "I will now calculate the total sales..." (narrating your actions)
+✅ RIGHT: Call execute_sql tool IMMEDIATELY with the query
+
+DO NOT say "I will...", "Let me check...", or "I'll calculate...". Just CALL THE TOOL.
+Only provide text responses AFTER you have tool results.
+
 DECISION LOGIC:
-- For questions about datasets → use list_datasets
-- For questions about tables in a dataset → use list_tables (ask for dataset if not specified)
-- For questions about table structure/columns → use get_table_schema
+- For questions about datasets → CALL list_datasets immediately
+- For questions about tables in a dataset → CALL list_tables immediately (ask for dataset if not specified)
+- For questions about table structure/columns → CALL get_table_schema immediately
 - For questions requesting actual data → first verify tables exist with list_tables, then generate SQL and use execute_sql
 
 IMPORTANT RULES:
@@ -662,6 +716,15 @@ Be helpful, accurate, and explain your reasoning when appropriate."""
             user_id=user_id,
             limit=context_turns * 2  # Multiply by 2 for user+assistant pairs
         )
+        
+        # Validate messages are complete (not truncated)
+        for i, msg in enumerate(messages):
+            if "content" not in msg:
+                logger.warning(f"Message {i} missing 'content' field: {msg}")
+            elif not isinstance(msg["content"], str):
+                logger.warning(f"Message {i} has non-string content: {type(msg['content'])}")
+        
+        logger.info(f"Retrieved {len(messages)} messages for context (requested {context_turns} turns)")
         
         return ConversationContext(
             session_id=session_id,
